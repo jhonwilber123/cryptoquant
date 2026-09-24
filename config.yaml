@@ -1,0 +1,72 @@
+# Configuracion de cryptoquant.
+# Todo parametro que afecte al riesgo vive aqui, a la vista.
+
+seed: 42
+
+data:
+  exchange: binance
+  quote: USDT
+  # Universo. Menos activos y mas liquidos = menos ruido y menos slippage.
+  symbols: [BTC, ETH, SOL, BNB, XRP, ADA, LINK, AVAX]
+  timeframe: 1d
+  start: "2019-01-01"
+  max_bars: 3000
+  cache: true
+  allow_synthetic_fallback: true
+
+risk:
+  # --- La palanca principal -------------------------------------------------
+  # Volatilidad anualizada objetivo de la cartera.
+  #   0.10 -> muy conservador (perfil de renta fija de riesgo medio)
+  #   0.15 -> conservador (similar a un indice bursatil amplio)
+  #   0.25 -> moderado
+  #   0.60 -> exposicion tipica de comprar y mantener cripto
+  target_volatility: 0.15
+
+  # Exposicion bruta maxima. 1.0 = nunca apalancado.
+  # Bajarlo a 0.70 garantiza un 30% permanente en efectivo.
+  max_gross_exposure: 1.0
+
+  # Tope por activo. Evita que la cartera se convierta en una apuesta unica.
+  max_weight_per_asset: 0.30
+
+  # Nivel de Kelly bruto a partir del cual se despliega el presupuesto de
+  # riesgo completo. NO multiplica la exposicion (eso lo hace
+  # target_volatility): convierte la ventaja estimada en un factor 0..1.
+  #   0.15 -> agresivo, basta poca ventaja para el tamano completo
+  #   0.25 -> equilibrado
+  #   0.40 -> exigente, solo opera con ventaja clara
+  kelly_full_size_level: 0.25
+
+  # Cortacircuito por drawdown: entre estos dos niveles la exposicion baja
+  # linealmente hasta cero.
+  drawdown_derisk_start: 0.10
+  max_drawdown_stop: 0.25
+
+  var_confidence: 0.95
+  covariance_lookback: 180
+  vol_lookback: 60
+
+signal:
+  # Media movil del filtro de regimen. Por debajo de ella la exposicion se
+  # recorta al 25%.
+  regime_ma: 100
+  momentum_windows: [21, 63, 126]
+  # Probabilidad minima para que un activo sea elegible.
+  min_probability: 0.55
+  # Etiquetado triple barrera.
+  label_horizon: 10
+  label_profit_mult: 2.0
+  label_stop_mult: 1.5
+  # Mezcla entre modelo ML (0.5) y senal econometrica (0.5).
+  ml_weight: 0.5
+
+backtest:
+  initial_capital: 10000.0
+  fee: 0.001        # 10 pb por lado
+  slippage: 0.0005  # 5 pb por lado
+  rebalance_every: 5
+  min_trade_threshold: 0.02
+  warmup: 250
+  retrain_every: 63
+  train_window: 500

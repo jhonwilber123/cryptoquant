@@ -1,0 +1,103 @@
+{
+  "created_utc": "2026-09-09T20:19:30+00:00",
+  "hypotheses": [
+    {
+      "id": "H1",
+      "rank": "primaria",
+      "claim": "El control de riesgo entrega la volatilidad objetivo en vivo.",
+      "metric": "volatilidad anualizada realizada mientras se esta invertido",
+      "success": "dentro de +-40% relativo del objetivo configurado",
+      "min_observations": 180,
+      "testable": true,
+      "note": "La volatilidad converge rapido: con 180 observaciones el estimador tiene un error relativo de ~5%. Esto SI se resuelve en unos seis meses."
+    },
+    {
+      "id": "H2",
+      "rank": "primaria",
+      "claim": "Las decisiones en vivo reproducen las del backtest.",
+      "metric": "diferencia entre pesos registrados y pesos recalculados",
+      "success": "diferencia maxima por activo < 1 punto porcentual",
+      "min_observations": 30,
+      "testable": true,
+      "note": "Detecta fallos de implementacion: datos rancios, desalineacion de fechas, fugas. Es el que mas probable es que falle."
+    },
+    {
+      "id": "H3",
+      "rank": "secundaria",
+      "claim": "El sistema bate al buy & hold ajustado a la misma volatilidad.",
+      "metric": "diferencia de retorno frente al indice escalado",
+      "success": "IC95% por bootstrap de bloques que excluya el cero",
+      "min_observations": 16969,
+      "testable": false,
+      "note": "NO es resoluble. Con la ventaja observada (+2.5% anual) y el tracking error (8.8% anual) harian falta ~46 anos para alcanzar p<0.05, y ~95 para hacerlo con potencia del 80%. Se registra por honestidad, no porque vaya a concluir nada."
+    }
+  ],
+  "config_snapshot": {
+    "data": {
+      "exchange": "binance",
+      "quote": "USDT",
+      "symbols": [
+        "BTC",
+        "ETH",
+        "SOL",
+        "BNB",
+        "XRP",
+        "ADA",
+        "LINK",
+        "AVAX"
+      ],
+      "timeframe": "1d",
+      "start": "2019-01-01",
+      "max_bars": 3000,
+      "cache": true,
+      "allow_synthetic_fallback": true
+    },
+    "risk": {
+      "target_volatility": 0.15,
+      "max_gross_exposure": 1.0,
+      "max_weight_per_asset": 0.3,
+      "kelly_full_size_level": 0.25,
+      "max_drawdown_stop": 0.25,
+      "drawdown_derisk_start": 0.1,
+      "var_confidence": 0.95,
+      "covariance_lookback": 180,
+      "vol_lookback": 60
+    },
+    "signal": {
+      "regime_ma": 100,
+      "momentum_windows": [
+        21,
+        63,
+        126
+      ],
+      "min_probability": 0.55,
+      "label_horizon": 10,
+      "label_profit_mult": 2.0,
+      "label_stop_mult": 1.5,
+      "ml_weight": 0.5
+    },
+    "backtest": {
+      "initial_capital": 10000.0,
+      "fee": 0.001,
+      "slippage": 0.0005,
+      "rebalance_every": 5,
+      "min_trade_threshold": 0.02,
+      "warmup": 250,
+      "retrain_every": 63,
+      "train_window": 500
+    },
+    "seed": 42
+  },
+  "universe": [
+    "ADA",
+    "AVAX",
+    "BNB",
+    "BTC",
+    "ETH",
+    "LINK",
+    "SOL",
+    "XRP"
+  ],
+  "code_version": "0.1.0",
+  "hash": "78d2480a223943da06eb873ce6f95069ac94310b6caee814d676051e8666a29e"
+}

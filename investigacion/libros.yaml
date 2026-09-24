@@ -1,0 +1,271 @@
+# Libros de referencia del area. No tienen por que ser recientes: son los que
+# fijan los metodos que usa el prototipo.
+#
+# acceso:
+#   libre_pdf  el autor o la editorial lo publica gratis en PDF; se descarga.
+#   libre_web  gratis, pero solo para leer en linea; se guarda el enlace.
+#   comercial  de pago; se guarda la referencia para pedirlo en biblioteca.
+#
+# Esta lista es una propuesta. recolectar.py la contrasta con Open Library y
+# OpenAlex (existencia, ISBN, citas) y comprueba que cada enlace funcione.
+
+libros:
+  # --- Estadistica y aprendizaje automatico ---------------------------------
+  - titulo: The Elements of Statistical Learning
+    autores: Hastie, Tibshirani y Friedman
+    anio: 2009
+    edicion: 2.a
+    editorial: Springer
+    eje: E4
+    por_que: Referencia canonica del aprendizaje estadistico (boosting, validacion, regularizacion).
+    acceso: libre_pdf
+    url: https://hastie.su.domains/ElemStatLearn/printings/ESLII_print12_toc.pdf.download.html
+  - titulo: An Introduction to Statistical Learning with Applications in Python
+    autores: James, Witten, Hastie, Tibshirani y Taylor
+    anio: 2023
+    editorial: Springer
+    eje: E4
+    por_que: Version aplicada del anterior, con codigo en Python.
+    acceso: libre_pdf
+    url: https://hastie.su.domains/ISLP/ISLP_website.pdf.download.html
+  - titulo: Computer Age Statistical Inference
+    autores: Efron y Hastie
+    anio: 2016
+    editorial: Cambridge University Press
+    eje: E6
+    por_que: Bootstrap, inferencia tras seleccion de modelos y pruebas multiples.
+    acceso: libre_pdf
+    url: https://hastie.su.domains/CASI_files/PDF/casi.pdf.download.html
+  - titulo: Pattern Recognition and Machine Learning
+    autores: Bishop
+    anio: 2006
+    editorial: Springer
+    eje: E4
+    por_que: Fundamentos probabilisticos del aprendizaje automatico.
+    acceso: libre_pdf
+    url: https://www.microsoft.com/en-us/research/uploads/prod/2006/01/Bishop-Pattern-Recognition-and-Machine-Learning-2006.pdf
+  - titulo: "Probabilistic Machine Learning: An Introduction"
+    autores: Murphy
+    anio: 2022
+    editorial: MIT Press
+    eje: E4
+    por_que: Tratado moderno y completo; calibracion de probabilidades.
+    acceso: libre_pdf
+    url: https://github.com/probml/pml-book/releases/latest/download/book1.pdf
+  - titulo: Mathematics for Machine Learning
+    autores: Deisenroth, Faisal y Ong
+    anio: 2020
+    editorial: Cambridge University Press
+    eje: E4
+    por_que: Algebra lineal, probabilidad y optimizacion que exige el resto.
+    acceso: libre_pdf
+    url: https://mml-book.github.io/book/mml-book.pdf
+  - titulo: Bayesian Data Analysis
+    autores: Gelman, Carlin, Stern, Dunson, Vehtari y Rubin
+    anio: 2013
+    edicion: 3.a
+    editorial: CRC Press
+    eje: E6
+    por_que: Inferencia bayesiana; alternativa al contraste de hipotesis clasico.
+    acceso: libre_pdf
+    url: http://www.stat.columbia.edu/~gelman/book/BDA3.pdf
+  - titulo: Deep Learning
+    autores: Goodfellow, Bengio y Courville
+    anio: 2016
+    editorial: MIT Press
+    eje: E4
+    por_que: Referencia de redes neuronales (LSTM y afines usados en la literatura cripto).
+    acceso: libre_web
+    url: https://www.deeplearningbook.org/
+
+  # --- Series temporales, econometria y prediccion --------------------------
+  - titulo: "Forecasting: Principles and Practice"
+    autores: Hyndman y Athanasopoulos
+    anio: 2021
+    edicion: 3.a
+    editorial: OTexts
+    eje: E2
+    por_que: Evaluacion de pronosticos fuera de muestra, explicada con rigor y claridad.
+    acceso: libre_web
+    url: https://otexts.com/fpp3/
+  - titulo: Time Series Analysis
+    autores: Hamilton
+    anio: 1994
+    editorial: Princeton University Press
+    eje: E2
+    por_que: El tratado de referencia de econometria de series temporales.
+    acceso: comercial
+  - titulo: Analysis of Financial Time Series
+    autores: Tsay
+    anio: 2010
+    edicion: 3.a
+    editorial: Wiley
+    eje: E1
+    por_que: GARCH, VaR y modelos de volatilidad aplicados a finanzas.
+    acceso: comercial
+  - titulo: The Econometrics of Financial Markets
+    autores: Campbell, Lo y MacKinlay
+    anio: 1997
+    editorial: Princeton University Press
+    eje: E5
+    por_que: Predecibilidad de rendimientos y eficiencia de mercado.
+    acceso: comercial
+  - titulo: "GARCH Models: Structure, Statistical Inference and Financial Applications"
+    autores: Francq y Zakoian
+    anio: 2019
+    edicion: 2.a
+    editorial: Wiley
+    eje: E1
+    por_que: Teoria estadistica de los GARCH (el GJR-GARCH del prototipo).
+    acceso: comercial
+  - titulo: "Anticipating Correlations: A New Paradigm for Risk Management"
+    autores: Engle
+    anio: 2009
+    editorial: Princeton University Press
+    eje: E3
+    por_que: Correlaciones dinamicas (DCC), del autor del ARCH.
+    acceso: comercial
+  - titulo: High-Frequency Financial Econometrics
+    autores: Ait-Sahalia y Jacod
+    anio: 2014
+    editorial: Princeton University Press
+    eje: E2
+    por_que: Volatilidad realizada con datos intradia (base del HAR-RV).
+    acceso: comercial
+  - titulo: Econometrics
+    autores: Hansen
+    anio: 2022
+    editorial: Princeton University Press
+    eje: E2
+    por_que: Econometria moderna de posgrado, con errores robustos y bootstrap.
+    acceso: comercial
+  - titulo: Resampling Methods for Dependent Data
+    autores: Lahiri
+    anio: 2003
+    editorial: Springer
+    eje: E6
+    por_que: Bootstrap por bloques para series dependientes (usado en el forward test).
+    acceso: comercial
+
+  # --- Riesgo y carteras -----------------------------------------------------
+  - titulo: "Quantitative Risk Management: Concepts, Techniques and Tools"
+    autores: McNeil, Frey y Embrechts
+    anio: 2015
+    edicion: revisada
+    editorial: Princeton University Press
+    eje: E1
+    por_que: Referencia de gestion cuantitativa del riesgo (VaR, colas, copulas).
+    acceso: comercial
+  - titulo: Elements of Financial Risk Management
+    autores: Christoffersen
+    anio: 2012
+    edicion: 2.a
+    editorial: Academic Press
+    eje: E1
+    por_que: Backtesting del VaR (pruebas de Kupiec y Christoffersen).
+    acceso: comercial
+  - titulo: "Portfolio Optimization: Theory and Application"
+    autores: Palomar
+    anio: 2025
+    editorial: Cambridge University Press
+    eje: E3
+    por_que: Optimizacion de carteras moderna, incluida la paridad de riesgo y HRP.
+    acceso: libre_web
+    url: https://portfoliooptimizationbook.com/
+  - titulo: Convex Optimization
+    autores: Boyd y Vandenberghe
+    anio: 2004
+    editorial: Cambridge University Press
+    eje: E3
+    por_que: Base matematica de toda optimizacion de carteras.
+    acceso: libre_pdf
+    url: https://web.stanford.edu/~boyd/cvxbook/bv_cvxbook.pdf
+  - titulo: Risk and Asset Allocation
+    autores: Meucci
+    anio: 2005
+    editorial: Springer
+    eje: E3
+    por_que: Asignacion de activos con estimacion robusta de riesgo.
+    acceso: comercial
+
+  # --- Aprendizaje automatico financiero y rigor ------------------------------
+  - titulo: Advances in Financial Machine Learning
+    autores: Lopez de Prado
+    anio: 2018
+    editorial: Wiley
+    eje: E6
+    por_que: Triple barrera, pesos por unicidad, validacion purgada, HRP y Sharpe deflactado; base del prototipo.
+    acceso: comercial
+  - titulo: Machine Learning for Asset Managers
+    autores: Lopez de Prado
+    anio: 2020
+    editorial: Cambridge University Press
+    eje: E6
+    por_que: Denoising de covarianzas, clustering y control del sobreajuste.
+    acceso: comercial
+  - titulo: "Causal Factor Investing: Can Factor Investing Become Scientific?"
+    autores: Lopez de Prado
+    anio: 2023
+    editorial: Cambridge University Press
+    eje: E6
+    por_que: Critica del sobreajuste en finanzas cuantitativas y propuesta causal.
+    acceso: comercial
+
+  # --- Criptoactivos y blockchain ---------------------------------------------
+  - titulo: "Bitcoin: A Peer-to-Peer Electronic Cash System"
+    autores: Nakamoto
+    anio: 2008
+    editorial: bitcoin.org
+    eje: E7
+    por_que: El documento fundacional de Bitcoin.
+    acceso: libre_pdf
+    url: https://bitcoin.org/bitcoin.pdf
+  - titulo: "Bitcoin and Cryptocurrency Technologies: A Comprehensive Introduction"
+    autores: Narayanan, Bonneau, Felten, Miller y Goldfeder
+    anio: 2016
+    editorial: Princeton University Press
+    eje: E7
+    por_que: El manual universitario de referencia sobre criptomonedas (Princeton).
+    acceso: libre_pdf
+    url: https://d28rh4a8wq0iu5.cloudfront.net/bitcointech/readings/princeton_bitcoin_book.pdf
+  - titulo: Mastering Bitcoin
+    autores: Antonopoulos y Harding
+    anio: 2023
+    edicion: 3.a
+    editorial: O'Reilly (licencia CC BY-SA)
+    eje: E7
+    por_que: Funcionamiento tecnico de Bitcoin; texto abierto.
+    acceso: libre_web
+    url: https://github.com/bitcoinbook/bitcoinbook
+  - titulo: Mastering Ethereum
+    autores: Antonopoulos y Wood
+    anio: 2018
+    editorial: O'Reilly (licencia CC BY-SA)
+    eje: E7
+    por_que: Contratos inteligentes y la base tecnica de DeFi; texto abierto.
+    acceso: libre_web
+    url: https://github.com/ethereumbook/ethereumbook
+  - titulo: "Ethereum: A Secure Decentralised Generalised Transaction Ledger (Yellow Paper)"
+    autores: Wood
+    anio: 2014
+    editorial: ethereum.github.io
+    eje: E7
+    por_que: Especificacion formal de Ethereum.
+    acceso: libre_pdf
+    url: https://ethereum.github.io/yellowpaper/paper.pdf
+  - titulo: DeFi and the Future of Finance
+    autores: Harvey, Ramachandran y Santoro
+    anio: 2021
+    editorial: Wiley
+    eje: E7
+    por_que: Finanzas descentralizadas explicadas por un referente de las finanzas empiricas.
+    acceso: comercial
+
+  # --- Metodologia de la investigacion (formato de tesis en Peru) -----------
+  - titulo: "Metodologia de la investigacion: las rutas cuantitativa, cualitativa y mixta"
+    autores: Hernandez-Sampieri y Mendoza
+    anio: 2018
+    editorial: McGraw-Hill
+    eje: metodologia
+    por_que: Referencia estandar de metodologia en las universidades peruanas.
+    acceso: comercial

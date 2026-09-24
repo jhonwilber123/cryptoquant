@@ -1,0 +1,158 @@
+# Protocolo de busqueda de antecedentes (revision sistematica, estilo PRISMA 2020)
+#
+# Este fichero es el que se ejecuta: recolectar.py aplica exactamente estas
+# consultas, filtros y cupos. Cambiarlo cambia la seleccion, asi que cada
+# ejecucion guarda su huella (hash) junto con los resultados.
+
+periodo:
+  desde: 2021            # "no mas de 5 anos"
+  hasta: 2026
+
+# Tipos de documento aceptados en revistas.
+tipos: [article, review]
+
+# ---------------------------------------------------------------------------
+# Niveles
+# ---------------------------------------------------------------------------
+# local       : al menos un autor con afiliacion en Puno.
+# nacional    : al menos un autor con afiliacion en Peru (fuera de Puno).
+# internacional: ningun autor con afiliacion en Peru.
+niveles:
+  local:
+    # Identificadores OpenAlex de instituciones de Puno.
+    openalex_instituciones:
+      I4210136524: Universidad Nacional del Altiplano
+      I4387153129: Universidad Nacional de Juliaca
+    # Afiliaciones en texto libre (cubre universidades sin ficha en OpenAlex).
+    patron_afiliacion: "\\bpuno\\b|juliaca|altiplano.*per|n[eé]stor c[aá]ceres|andina n[eé]stor"
+    # Codigos de institucion en ALICIA (CONCYTEC). UPEU se excluye: tiene
+    # sedes en varias regiones y no se puede saber cual.
+    alicia_instituciones: [UNAP, UANCV, UNAJ, UPSC]
+    cupo: 30
+    incluir_tesis: true          # la produccion local en revistas es escasa
+  nacional:
+    pais: PE
+    cupo_articulos: 30
+    cupo_tesis: 10               # solo maestria y doctorado, como complemento
+  internacional:
+    cupo_por_eje: 10
+    niveles_revista: [A, B]      # solo revistas de primer nivel
+
+# ---------------------------------------------------------------------------
+# Calidad de la revista
+# ---------------------------------------------------------------------------
+# A: revistas de referencia de finanzas, econometria, estadistica y
+#    prediccion (lista FT50 y equivalentes del area).
+# B: revista del nucleo cientifico internacional (OpenAlex is_core, derivado
+#    del CWTS Leiden Ranking; aproxima Web of Science / Scopus).
+# C: otra revista academica indexada.
+# T: tesis (solo niveles nacional y local, marcadas como complemento).
+revistas_nivel_a:
+  - The Journal of Finance
+  - Journal of Financial Economics
+  - Review of Financial Studies
+  - Journal of Financial and Quantitative Analysis
+  - Review of Finance
+  - Management Science
+  - Review of Asset Pricing Studies
+  - Econometrica
+  - American Economic Review
+  - The Quarterly Journal of Economics
+  - Journal of Political Economy
+  - The Review of Economic Studies
+  - Journal of Economic Literature
+  - Journal of Economic Perspectives
+  - Brookings Papers on Economic Activity
+  - Annual Review of Financial Economics
+  - Journal of Econometrics
+  - Journal of Business and Economic Statistics
+  - Journal of Financial Econometrics
+  - Journal of Applied Econometrics
+  - The Review of Economics and Statistics
+  - Journal of the American Statistical Association
+  - Journal of the Royal Statistical Society Series B (Statistical Methodology)
+  - Annals of Statistics
+  - International Journal of Forecasting
+  - Quantitative Finance
+  - Mathematical Finance
+  - Journal of Monetary Economics
+  - Journal of Banking and Finance
+  - Journal of Empirical Finance
+  - Journal of Financial Markets
+  - Journal of Economic Dynamics and Control
+  - European Journal of Operational Research
+
+# ---------------------------------------------------------------------------
+# Ejes: cada uno responde a un modulo del prototipo
+# ---------------------------------------------------------------------------
+# Sintaxis de OpenAlex: AND / OR / NOT en mayusculas y comillas para frases.
+ejes:
+  E1:
+    nombre: Volatilidad y riesgo de los criptoactivos
+    modulo: econometrics/volatility.py, econometrics/risk.py
+    consultas:
+      - '(bitcoin OR cryptocurrency OR cryptocurrencies OR "crypto assets" OR "digital assets" OR ethereum) AND (volatility OR GARCH OR "value at risk" OR "expected shortfall" OR "tail risk")'
+  E2:
+    nombre: Prevision de volatilidad y su evaluacion (metodo general)
+    modulo: econometrics/volatility.py (HAR-RV, QLIKE, backtesting del VaR)
+    consultas:
+      - '("realized volatility" OR "heterogeneous autoregressive" OR "HAR model") AND (forecasting OR forecast OR forecasts)'
+      - '("volatility forecasts" OR "volatility forecasting") AND (evaluation OR comparison OR "loss function")'
+  E3:
+    nombre: Construccion de carteras y control de riesgo
+    modulo: portfolio/optimizer.py, portfolio/sizing.py
+    consultas:
+      - '(bitcoin OR cryptocurrency OR cryptocurrencies OR "crypto assets") AND (portfolio OR diversification OR "risk parity" OR "hierarchical risk parity" OR "portfolio optimization")'
+      - '("volatility-managed portfolios" OR "volatility managed portfolios" OR "volatility targeting" OR "volatility timing")'
+  E4:
+    nombre: Prediccion de rendimientos con aprendizaje automatico
+    modulo: models/predictor.py, models/labeling.py
+    consultas:
+      - '(bitcoin OR cryptocurrency OR cryptocurrencies) AND ("machine learning" OR "deep learning" OR "neural network" OR LSTM OR "gradient boosting" OR "random forest") AND (prediction OR forecasting OR predictability OR trading)'
+  E5:
+    nombre: Factores de riesgo, valoracion y eficiencia del mercado cripto
+    modulo: backtest/engine.py (senal econometrica, filtro de regimen)
+    consultas:
+      - '(bitcoin OR cryptocurrency OR cryptocurrencies OR "crypto assets") AND ("risk factors" OR "cross-section" OR momentum OR "asset pricing" OR "return predictability" OR "market efficiency")'
+  E6:
+    nombre: Rigor estadistico - sobreajuste, pruebas multiples y replicacion
+    modulo: models/validation.py, forward/ (forward test pre-registrado)
+    consultas:
+      - '("backtest overfitting" OR "multiple testing" OR "data snooping" OR "replication crisis" OR "false discoveries" OR "deflated Sharpe" OR "p-hacking") AND (finance OR returns OR trading OR investment OR factors OR anomalies)'
+  E7:
+    nombre: Blockchain, DeFi, stablecoins, regulacion y adopcion
+    modulo: contexto del proyecto
+    consultas:
+      - '(cryptocurrency OR cryptocurrencies OR bitcoin OR "crypto assets" OR "decentralized finance" OR DeFi OR stablecoin OR stablecoins) AND (regulation OR adoption OR "financial stability" OR "decentralized finance" OR stablecoins)'
+
+# Pertinencia (niveles nacional y local). Un trabajo entra solo si su titulo o
+# resumen contiene al menos uno de estos terminos, que se buscan como comienzo
+# de palabra y sin tildes ("financ" cubre financiero, financial, financiamiento).
+# Las consultas amplias sobre blockchain traen muchas aplicaciones ajenas a la
+# inversion (historias clinicas, cadenas de suministro), y la produccion local
+# incluye tesis de otros campos que solo comparten palabras como "prediccion".
+# Cuantos mas terminos distintos aparezcan, antes se ordena el trabajo.
+terminos_pertinencia: [cripto, crypto, bitcoin, ethereum, stablecoin, defi, inversion, investment,
+  investor, portafolio, portfolio, cartera, riesgo, risk, volatil, rentabilidad, rendimiento, returns,
+  precio, price, bolsa, stock, "mercado de valores", financ, fintech, pago, payment, billetera,
+  wallet, banca, bank, credito, credit, dinero, money, moneda, currency, trading, garch, arima,
+  pronostico, forecast, "valor en riesgo", "value at risk", activo, asset, "tipo de cambio",
+  "exchange rate", markowitz]
+
+# Consultas adicionales para Peru (autores con afiliacion peruana). Se suman a
+# las de los ejes, porque la produccion nacional es menor y mas aplicada.
+consultas_nacionales:
+  - '(cryptocurrency OR cryptocurrencies OR bitcoin OR blockchain OR fintech OR criptomonedas OR criptoactivos OR "cadena de bloques")'
+  - '(volatility OR volatilidad OR GARCH OR "value at risk" OR "valor en riesgo") AND (stock OR stocks OR market OR exchange OR bolsa OR acciones OR "tipo de cambio" OR financial OR financiero)'
+  - '("machine learning" OR "aprendizaje automatico" OR "aprendizaje automático" OR "deep learning" OR "neural network" OR "redes neuronales" OR LSTM) AND (stock OR price OR prices OR financial OR precio OR precios OR financiero OR "exchange rate")'
+  - '(portfolio OR portafolio OR "cartera de inversion" OR "cartera de inversión") AND (risk OR riesgo OR optimization OR optimizacion OR optimización)'
+  - '("financial inclusion" OR "inclusion financiera" OR "inclusión financiera" OR "digital payments" OR "pagos digitales" OR "mobile money" OR "billetera digital" OR "financial literacy" OR "educacion financiera" OR "educación financiera")'
+
+# Consultas en ALICIA (repositorio nacional de CONCYTEC: revistas y tesis
+# peruanas). Sintaxis VuFind: AND / OR / NOT y comillas.
+consultas_alicia:
+  - 'criptomonedas OR criptoactivos OR bitcoin OR blockchain OR "cadena de bloques"'
+  - 'fintech OR "billetera digital" OR "billeteras digitales" OR "banca digital" OR "pagos digitales" OR "inclusion financiera"'
+  - '(volatilidad OR GARCH OR "valor en riesgo") AND (acciones OR bolsa OR financiero OR "tipo de cambio" OR rendimientos)'
+  - '"mercado de valores" OR "bolsa de valores" OR "portafolio de inversion" OR "cartera de inversion"'
+  - '("aprendizaje automatico" OR "machine learning" OR "redes neuronales" OR ARIMA OR "series de tiempo") AND (pronostico OR prediccion) AND (precio OR precios OR financiero OR acciones OR "tipo de cambio")'

@@ -1,0 +1,19 @@
+{
+  "fecha": "2026-09-23",
+  "inicio_utc": "2026-09-23T21:40:26+00:00",
+  "protocolo_hash": "d5205849ff9e",
+  "prisma": {
+    "identificados": 860,
+    "duplicados": 75,
+    "fuera_de_criterio": 561,
+    "openalex": "incompleto: se agoto el presupuesto diario",
+    "incluidos": 70,
+    "por_nivel": {
+      "internacional": 0,
+      "nacional": 40,
+      "local": 30
+    },
+    "con_pdf": 45
+  },
+  "revistas_nivel_a_identificadas": {}
+}

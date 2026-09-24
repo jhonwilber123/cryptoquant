@@ -1,0 +1,16 @@
+Esta carpeta (USB) es la COPIA DE TRABAJO del proyecto.
+
+La copia que RECOLECTA datos esta en el PC:
+    C:\Users\ADMIN\Proyectos\Blockchain y criptoactivos
+Alli la tarea programada anota cada dia en el diario sellado del forward test.
+
+Aqui se trabaja y se leen los datos, pero mientras exista este fichero el
+programa no escribe en el diario ni instala la tarea. Dos diarios avanzando
+a la vez bifurcarian el experimento.
+
+Traer los datos nuevos del PC (la tarea lo hace sola si el USB esta puesto):
+    powershell -ExecutionPolicy Bypass -File scripts\sincronizar.ps1 -Datos
+Llevar al PC el codigo cambiado aqui (pasa tests y reproduce el diario antes):
+    powershell -ExecutionPolicy Bypass -File scripts\sincronizar.ps1 -Codigo
+
+No borre este fichero.

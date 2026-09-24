@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+data/cache/
+reports/*.png
+reports/*.csv
+.pytest_cache/
+.env
+.claude/
+*.log
+investigacion/busquedas/cache/
+investigacion/clave_openalex.txt

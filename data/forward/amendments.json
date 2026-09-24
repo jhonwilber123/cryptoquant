@@ -1,0 +1,29 @@
+[
+  {
+    "id": "E1",
+    "title": "El modo en vivo sigue el calendario del backtest",
+    "reason": "Con 7 anotaciones se detecto que el registro diario reentrenaba el modelo y rebalanceaba en cada ejecucion, mientras el backtest reentrena cada 63 barras (65 efectivas) y rebalancea cada 5. La rotacion en vivo fue ~12 veces la del backtest: costes a ritmo de ~11.5% anual frente a ~1%. El forward test estaba midiendo otra estrategia. H2 no lo detecto porque solo comprobaba que recalcular una fecha diera lo mismo.",
+    "changes": [
+      "Calendario anclado en 'anchor': rebalanceo cada rebalance_every barras y reentrenamiento cada 65 (primer multiplo de 5 >= 63), como el backtest. Entre rebalanceos se mantienen los pesos objetivo.",
+      "Si un rebalanceo programado cae en un dia sin anotar, se hace en la primera anotacion posterior, con el modelo del calendario. No se rellenan dias.",
+      "El filtro de rotacion y el drawdown usan la cartera derivada por precio hasta la fecha de decision, como el backtest.",
+      "Costes realizados: incluyen volver a los pesos objetivo tras la deriva de precios, como el backtest.",
+      "H1: cada tramo se normaliza por su duracion en dias. Antes se trataba como un dia y la volatilidad salia inflada (19.8% frente a 15.5% con los datos de la fase 1). Umbral sin cambios.",
+      "H2: ademas de los pesos, se comprueba que la accion (rebalancear o mantener) y la fecha de corte del modelo salen igual al recalcular. La equivalencia con el backtest la cubre un test automatico que ejecuta el modo en vivo sobre el estado del backtest.",
+      "H1 y H2 cuentan solo desde 'effective_from'. Las anotaciones anteriores quedan en el diario, sin modificar, como fase 1."
+    ],
+    "hypotheses_changed": false,
+    "created_utc": "2026-09-21T17:51:43+00:00",
+    "anchor": "2026-09-20",
+    "effective_from": "2026-09-20",
+    "preregistration_hash": "78d2480a223943da06eb873ce6f95069ac94310b6caee814d676051e8666a29e",
+    "journal_head": {
+      "seq": 7,
+      "hash": "1796ad7db9acb5b40e92835510ca65cd3b1328a77e382e4befeb22676dc7273c"
+    },
+    "config_hash": "a11a48ee3cd1217a2c68b66a7d6cadae6c85f73b06c0a25b8e4e74f9c3259b8f",
+    "code_version": "0.2.0",
+    "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hash": "4c58ed79f78a8bc0de4e876a39e6ac8faa9c116196983608898bd8e65187b79f"
+  }
+]
