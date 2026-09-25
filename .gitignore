@@ -10,3 +10,14 @@ reports/*.csv
 *.log
 investigacion/busquedas/cache/
 investigacion/clave_openalex.txt
+
+# Material de terceros: se descarga con investigacion/recolectar.py, pero no se
+# redistribuye (varios autores solo permiten uso personal).
+investigacion/**/*.pdf
+# Borrador de tesis: publicarlo antes de presentarlo haria que el antiplagio
+# (Turnitin) marque la propia tesis como coincidencia con este repositorio.
+investigacion/proyecto_de_tesis/
+# Generados: se rehacen solos en cada ejecucion.
+reports/dashboard.html
+investigacion/busquedas/*/openalex_*.json
+investigacion/busquedas/*/alicia_*.json
