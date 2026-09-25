@@ -270,7 +270,7 @@ hipótesis y una de ellas se declara irresoluble de entrada:
 | | Hipótesis | Resoluble |
 |---|---|---|
 | **H1** | El control de riesgo entrega la volatilidad objetivo en vivo | Sí, ~6 meses |
-| **H2** | Las decisiones en vivo reproducen el backtest | Sí, ~1 mes |
+| **H2** | Las decisiones en vivo son reproducibles y siguen el calendario del backtest | Sí, ~1-2 meses |
 | **H3** | El sistema bate al buy & hold ajustado a igual volatilidad | **No, ~46 años** |
 
 ### Por qué el diario está sellado
@@ -296,6 +296,22 @@ Las hipótesis y sus umbrales se fijan **antes** de tener un solo dato, y quedan
 hasheadas. Sin eso, a los seis meses siempre aparece alguna métrica en la que el
 sistema sale bien. `forward init` se niega a sobrescribir un pre-registro
 existente sin `--overwrite`.
+
+### Enmiendas: corregir sin retocar
+
+Con 7 anotaciones se detectó que el registro diario reentrenaba y rebalanceaba en
+cada ejecución, mientras el backtest reentrena cada 65 sesiones y rebalancea cada
+5. Rotaba unas 12 veces más: el forward test medía otra estrategia. La corrección
+no edita el pasado; se registra como **enmienda E1** (`data/forward/amendments.json`):
+
+- está sellada con su hash y enlazada al pre-registro y a la última anotación que
+  existía al escribirla, así que se puede comprobar que es anterior a los datos a
+  los que afecta;
+- las hipótesis no cambian, solo el momento desde el que cuentan: H1 y H2 se
+  cuentan desde el 2026-09-20;
+- las 7 anotaciones anteriores siguen en el diario, intactas, como fase 1.
+
+`forward verify` comprueba que cada anotación sigue el protocolo vigente en su fecha.
 
 ### Automatización
 
@@ -325,16 +341,58 @@ Tres cosas que el sistema se niega a hacer sin supervisión:
 - **Registrar sobre la barra en curso.** Se descarta el periodo sin cerrar, más
   un margen de 2 minutos para que el exchange consolide la vela.
 
-### H2: causalidad en producción
+### H2: reproducibilidad y calendario
 
 Todo el sistema es causal, así que **recalcular hoy la decisión de una fecha
 pasada debe dar exactamente el mismo resultado que se registró entonces**.
 `forward reproduce` lo comprueba. Si difiere: o el exchange revisó su histórico,
 o hay una fuga de futuro que el test unitario no cazó.
 
-Backtest y modo en vivo comparten un único método de decisión
-([`_decide`](cryptoquant/backtest/engine.py)), precisamente para que no puedan
-divergir.
+Reproducible no es lo mismo que equivalente al backtest: la fase 1 era
+perfectamente reproducible y aun así seguía otro calendario. La equivalencia la
+comprueba `test_live_schedule_matches_the_backtest`, que ejecuta el modo diario
+sobre el estado del backtest y exige que ambos coincidan en qué días rebalancean
+y con qué pesos. Además, backtest y modo en vivo comparten un único método de
+decisión ([`_decide`](cryptoquant/backtest/engine.py)).
+
+### Dos copias: trabajo y recolección
+
+El proyecto vive en dos carpetas con papeles distintos:
+
+| Copia | Dónde | Papel |
+|---|---|---|
+| Recolector | PC, `C:\Users\ADMIN\Proyectos\Blockchain y criptoactivos` | La tarea programada anota allí el diario. Es la única copia que escribe en el experimento. |
+| Trabajo | USB, `D:\Blockchain y criptoactivos` (este repositorio) | Donde se edita el código. Lleva `COPIA_DE_TRABAJO.txt` y, mientras exista, el programa se niega a escribir en el diario y a instalar la tarea. |
+
+`scripts\sincronizar.ps1 -Datos` trae del PC los datos nuevos. La tarea diaria lo
+hace sola si el USB está conectado. `scripts\sincronizar.ps1 -Codigo` lleva el
+código al PC: antes pasa los tests en el USB; después, ya en el PC, vuelve a
+pasarlos y recalcula todas las decisiones del diario. Si algo falla, restaura el
+código anterior.
+
+---
+
+## Investigación — [`investigacion/`](investigacion/README.md)
+
+Base documental del proyecto, reunida por un programa y no de memoria, para que
+la investigación no dependa de lo que un modelo de lenguaje recuerde o elija:
+
+- **Antecedentes** de 2021 a 2026, clasificados en internacional, nacional
+  (Perú) y local (Puno), con su resumen, en `investigacion/antecedentes/`.
+- **Libros de referencia** en `investigacion/libros/`.
+- **Referencias BibTeX** en `investigacion/referencias.bib`.
+
+`investigacion/recolectar.py` aplica las consultas y los criterios fijados en
+`protocolo.yaml` sobre OpenAlex, ALICIA (CONCYTEC) y Crossref, y verifica cada
+referencia. Una tarea semanal (`scripts\literatura.ps1`) la repite en el PC.
+
+**Los PDFs no están en el repositorio.** Aunque son gratuitos, varios se publican
+solo para uso personal y sus autores no permiten redistribuirlos. El script los
+descarga en tu propia copia desde las fuentes oficiales:
+
+```
+python investigacion\recolectar.py
+```
 
 ---
 
