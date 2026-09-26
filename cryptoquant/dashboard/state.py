@@ -439,6 +439,14 @@ def market_state(closes: pd.DataFrame, regime_ma: int, ann: float) -> list[dict]
 
 
 # --------------------------------------------------------------------------
+def leer_riesgo() -> dict | None:
+    """Lo que dejo `riesgo`. Como el backtest, se lee y no se recalcula."""
+    from ..riesgo.informe import leer_estado
+
+    return leer_estado()
+
+
+# --------------------------------------------------------------------------
 def collect_state(cfg: Config) -> dict:
     ann = annualization_factor(cfg.data.timeframe)
     try:
@@ -471,4 +479,5 @@ def collect_state(cfg: Config) -> dict:
         "backtest": backtest_state(closes, cfg, ann) if closes is not None else None,
         "market": market_state(closes, cfg.signal.regime_ma, ann) if closes is not None else None,
         "history": market_history(closes, cfg.signal.regime_ma) if closes is not None else None,
+        "risk": leer_riesgo(),
     })

@@ -1,0 +1,422 @@
+---
+title: "Laboratorio cuantitativo de criptoactivos — R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: kable
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 10, fig.height = 4.5)
+options(digits = 4, scipen = 6)
+```
+
+La misma ruta que el notebook de Python (`laboratorio/python/laboratorio.ipynb`),
+de las velas al modelo, con `dplyr` y `ggplot2`. Parte del CSV que exporta
+Python; si no existe, lo descarga de Binance.
+
+Abra `laboratorio.Rproj` en RStudio para que las rutas relativas funcionen.
+
+```{r paquetes}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(forecast)  # auto.arima
+library(rugarch)   # GARCH(1,1)
+library(ranger)    # random forest
+library(tseries)   # adf.test, jarque.bera.test
+source("funciones.R")
+
+theme_set(theme_minimal(base_size = 11))
+set.seed(42)
+
+RUTA_CSV <- file.path("..", "..", "reports", "laboratorio", "velas_BTC-USDT_1h.csv")
+SALIDA   <- file.path("..", "..", "reports", "laboratorio", "r")
+dir.create(SALIDA, showWarnings = FALSE, recursive = TRUE)
+```
+
+# 1. Los datos
+
+El CSV es el punto de entrega entre Python y R: fecha ISO en UTC y las cinco
+columnas OHLCV.
+
+```{r datos}
+if (!file.exists(RUTA_CSV)) {
+  dir.create(dirname(RUTA_CSV), showWarnings = FALSE, recursive = TRUE)
+  descargar_binance("BTCUSDT", "1h", "2022-01-01") |>
+    mutate(fecha = format(fecha, "%Y-%m-%dT%H:%M:%SZ")) |>
+    write_csv(RUTA_CSV)
+}
+velas <- leer_velas(RUTA_CSV)
+glimpse(velas)
+```
+
+# 2. Procesamiento con dplyr
+
+## Filtrar y agrupar
+
+```{r filtrar}
+# Solo 2024, por mes: rango medio intradia y volumen
+velas |>
+  filter(year(fecha) == 2024) |>
+  group_by(mes = floor_date(fecha, "month")) |>
+  summarise(velas = n(),
+            rango_medio = mean((high - low) / close),
+            volumen = sum(volume)) |>
+  head(6)
+```
+
+De velas horarias a diarias: agrupar por día UTC y quedarse con la primera
+apertura, el máximo, el mínimo, el último cierre y la suma del volumen.
+
+```{r diario}
+diario <- a_diario(velas)
+tail(diario, 3)
+```
+
+## Rendimientos simples y logarítmicos
+
+$R_t = P_t / P_{t-1} - 1$ y $r_t = \ln(P_t / P_{t-1})$. Los logarítmicos se
+suman en el tiempo; los simples, entre activos de una cartera.
+
+```{r rendimientos}
+diario <- diario |>
+  mutate(r_simple = close / lag(close) - 1,
+         r_log    = log(close / lag(close)))
+
+diario |>
+  summarise(media_simple = mean(r_simple, na.rm = TRUE),
+            media_log    = mean(r_log, na.rm = TRUE),
+            total_simple = prod(1 + r_simple, na.rm = TRUE) - 1,
+            total_log    = exp(sum(r_log, na.rm = TRUE)) - 1)
+```
+
+La media de los simples es mayor que la de los log (desigualdad de Jensen),
+pero el rendimiento total es el mismo por los dos caminos.
+
+## Crecimiento del capital
+
+```{r capital}
+capital_inicial <- 1000
+diario <- diario |>
+  mutate(capital = capital_inicial * exp(cumsum(coalesce(r_log, 0))),
+         maximo  = cummax(capital),
+         caida   = capital / maximo - 1)
+
+ggplot(diario, aes(dia, capital)) +
+  geom_line(colour = "#2c7fb8") +
+  scale_y_log10(labels = scales::dollar) +
+  labs(title = "1 000 USD en BTC", x = NULL, y = "capital (escala log)")
+
+ggplot(diario, aes(dia, caida)) +
+  geom_area(fill = "#d1495b", alpha = 0.6) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = sprintf("Caída desde máximos (peor: %.0f%%)", 100 * min(diario$caida)),
+       x = NULL, y = NULL)
+```
+
+## Gráfico de velas con ggplot2
+
+```{r velas}
+ult <- tail(diario, 90) |> mutate(sube = close >= open)
+ggplot(ult, aes(dia)) +
+  geom_segment(aes(xend = dia, y = low, yend = high, colour = sube)) +
+  geom_rect(aes(xmin = dia - 0.35, xmax = dia + 0.35,
+                ymin = pmin(open, close), ymax = pmax(open, close), fill = sube)) +
+  scale_colour_manual(values = c(`TRUE` = "#2e9e6b", `FALSE` = "#d1495b"), guide = "none") +
+  scale_fill_manual(values = c(`TRUE` = "#2e9e6b", `FALSE` = "#d1495b"), guide = "none") +
+  labs(title = "BTC/USDT, últimos 90 días", x = NULL, y = NULL)
+```
+
+# 3. Preparación de variables
+
+Mismas columnas y mismas fórmulas que en Python. `retorno_futuro` y `sube`
+son el objetivo y miran a mañana; nunca entran en el modelo.
+
+```{r variables}
+v <- preparar_variables(diario |> select(dia, open, high, low, close, volume))
+v |> select(dia, close, retorno, retorno_l1, rsi_14, macd, bb_pct, vol_20, sube) |> tail()
+```
+
+¿Coinciden con las de Python? Diferencia máxima por columna:
+
+```{r contraste}
+ruta_py <- file.path("..", "..", "reports", "laboratorio", "variables_diarias.csv")
+if (file.exists(ruta_py)) comparar_con_python(v, ruta_py) |> arrange(desc(dif_maxima)) |> head(5)
+```
+
+# 4. Modelamiento cuantitativo
+
+## Colas gruesas
+
+```{r colas}
+r <- na.omit(v$retorno)
+z <- (r - mean(r)) / sd(r)
+
+tibble(umbral = 2:5) |>
+  mutate(observados = sapply(umbral, \(k) sum(abs(z) > k)),
+         esperados_normal = 2 * pnorm(-umbral) * length(z),
+         veces_mas = observados / esperados_normal)
+
+c(curtosis_exceso = mean(z^4) - 3, asimetria = mean(z^3))
+jarque.bera.test(r)
+```
+
+```{r histograma}
+ggplot(tibble(z), aes(z)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 120, fill = "#2c7fb8", alpha = 0.6) +
+  stat_function(fun = dnorm, colour = "#d1495b") +
+  scale_y_log10() + coord_cartesian(ylim = c(1e-5, 1)) +
+  labs(title = "Retornos estandarizados frente a la normal (escala log)")
+
+ggplot(tibble(z), aes(sample = z)) + stat_qq(size = 0.6) + stat_qq_line(colour = "#d1495b") +
+  labs(title = "QQ frente a la normal")
+```
+
+## Estadística de señales
+
+Acierto y retorno medio a 5 días tras cada señal, en su dirección, frente a
+aplicar esa dirección todos los días.
+
+```{r senales}
+h <- 5
+s <- v |>
+  mutate(fwd = log(lead(close, h) / close),
+         rsi_sale_sobreventa      = cruza_arriba(rsi_14, 30),
+         rsi_sale_sobrecompra     = cruza_arriba(-rsi_14, -70),
+         macd_cruce_alcista       = cruza_arriba(macd, macd_senal),
+         macd_cruce_bajista       = cruza_arriba(macd_senal, macd),
+         cruce_dorado_20_50       = cruza_arriba(sma_20, sma_50),
+         cruce_muerte_20_50       = cruza_arriba(sma_50, sma_20),
+         bollinger_rompe_inferior = cruza_arriba(bb_inf, close),
+         bollinger_rompe_superior = cruza_arriba(close, bb_sup)) |>
+  filter(!is.na(fwd))
+
+direccion <- c(rsi_sale_sobreventa = 1, rsi_sale_sobrecompra = -1, macd_cruce_alcista = 1,
+               macd_cruce_bajista = -1, cruce_dorado_20_50 = 1, cruce_muerte_20_50 = -1,
+               bollinger_rompe_inferior = 1, bollinger_rompe_superior = -1)
+
+tabla_senales <- s |>
+  pivot_longer(names(direccion), names_to = "senal", values_to = "evento") |>
+  mutate(d = direccion[senal], ret_dir = d * fwd) |>
+  group_by(senal) |>
+  summarise(eventos = sum(evento, na.rm = TRUE),
+            acierto = mean(ret_dir[evento %in% TRUE] > 0),
+            acierto_base = mean(ret_dir > 0),
+            retorno_medio = mean(ret_dir[evento %in% TRUE]),
+            retorno_medio_base = mean(ret_dir),
+            p_valor = binom.test(sum(ret_dir[evento %in% TRUE] > 0), eventos,
+                                 acierto_base, alternative = "greater")$p.value)
+tabla_senales
+```
+
+# 5. Series de tiempo
+
+## Precios frente a retornos
+
+```{r adf}
+adf.test(log(diario$close))     # H0: raíz unitaria
+adf.test(r)
+```
+
+## Autocorrelación
+
+```{r acf}
+acf_r   <- acf(r, lag.max = 20, plot = FALSE)$acf[-1]
+acf_abs <- acf(abs(r), lag.max = 20, plot = FALSE)$acf[-1]
+banda <- 1.96 / sqrt(length(r))
+
+tibble(rezago = 1:20, retorno = acf_r, `|retorno|` = acf_abs) |>
+  pivot_longer(-rezago) |>
+  ggplot(aes(rezago, value, fill = name)) +
+  geom_col(position = "dodge") +
+  annotate("rect", xmin = -Inf, xmax = Inf, ymin = -banda, ymax = banda, alpha = 0.2) +
+  labs(title = "La dirección no tiene memoria; la magnitud sí", y = "ACF", fill = NULL)
+
+Box.test(r, lag = 10, type = "Ljung-Box")
+Box.test(r^2, lag = 10, type = "Ljung-Box")
+```
+
+## Patrones por hora y por día (UTC)
+
+```{r calendario}
+dias <- c("lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo")
+horaria <- velas |>
+  mutate(r = log(close / lag(close)),
+         hora = hour(fecha),
+         dia_semana = factor(dias[wday(fecha, week_start = 1)], levels = dias)) |>
+  filter(!is.na(r))
+
+por_hora <- horaria |> group_by(hora) |>
+  summarise(n = n(), retorno_medio = mean(r), volatilidad = sd(r))
+por_dia <- horaria |> group_by(dia_semana) |>
+  summarise(n = n(), retorno_medio = mean(r), volatilidad = sd(r))
+
+ggplot(por_hora, aes(hora, volatilidad)) + geom_col(fill = "#2c7fb8") +
+  labs(title = "Volatilidad por hora UTC")
+ggplot(por_dia, aes(dia_semana, volatilidad)) + geom_col(fill = "#2c7fb8") +
+  labs(title = "Volatilidad por día", x = NULL)
+
+kruskal.test(r ~ factor(hora), data = horaria)            # ¿retorno distinto por hora?
+kruskal.test(abs(r) ~ factor(hora), data = horaria)       # ¿volatilidad distinta por hora?
+kruskal.test(r ~ dia_semana, data = horaria)
+```
+
+## ARIMA básico
+
+Elegido por AIC con el 80% inicial; evaluado a un paso sobre el resto con los
+parámetros congelados, frente a predecir siempre cero.
+
+```{r arima}
+rp <- r * 100
+n_tr <- floor(length(rp) * 0.8)
+ajuste <- auto.arima(rp[1:n_tr], d = 0, max.p = 2, max.q = 2, seasonal = FALSE,
+                     stepwise = FALSE, ic = "aic")
+ajuste
+
+un_paso <- fitted(Arima(rp, model = ajuste))[(n_tr + 1):length(rp)]
+real <- rp[(n_tr + 1):length(rp)]
+c(rmse_arima = sqrt(mean((real - un_paso)^2)),
+  rmse_cero  = sqrt(mean(real^2)),
+  acierto_direccion = mean(sign(un_paso) == sign(real)))
+```
+
+# 6. Volatilidad: GARCH(1,1)
+
+$\sigma^2_{t+1} = \omega + \alpha\, r_t^2 + \beta\, \sigma^2_t$, con
+innovaciones *t* de Student.
+
+```{r garch}
+spec <- ugarchspec(variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),
+                   mean.model = list(armaOrder = c(0, 0), include.mean = TRUE),
+                   distribution.model = "std")
+g <- ugarchfit(spec, rp, solver = "hybrid")
+coef(g)
+
+persistencia <- sum(coef(g)[c("alpha1", "beta1")])
+sigma_manana <- as.numeric(sigma(ugarchforecast(g, n.ahead = 1))) / 100
+c(persistencia = persistencia,
+  vida_media_dias = log(0.5) / log(persistencia),
+  sigma_manana = sigma_manana,
+  sigma_manana_anual = sigma_manana * sqrt(365))
+```
+
+```{r garch-grafico}
+tibble(dia = v$dia[-1], GARCH = as.numeric(sigma(g)) / 100, `móvil 20d` = v$vol_20[-1]) |>
+  pivot_longer(-dia) |>
+  ggplot(aes(dia, value * sqrt(365), colour = name)) + geom_line(linewidth = 0.4) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Volatilidad anualizada", x = NULL, y = NULL, colour = NULL)
+```
+
+## Del pronóstico al stop y al tamaño
+
+Stop a 2 sigmas previstas; tamaño para perder el 1% de la cuenta si salta.
+
+```{r plan}
+precio <- tail(diario$close, 1); capital <- 10000; riesgo <- 0.01; k <- 2; rb <- 2
+distancia <- precio * (1 - exp(-k * sigma_manana))
+unidades  <- min(capital * riesgo / distancia, capital / precio)  # sin apalancamiento
+c(precio = precio, stop = precio - distancia, objetivo = precio + rb * distancia,
+  nominal = unidades * precio, fraccion_capital = unidades * precio / capital,
+  perdida_si_stop = unidades * distancia)
+```
+
+# 7. Machine learning: random forest
+
+Entrenar con el 70% más antiguo, una vela de embargo y probar con el resto.
+
+```{r bosque}
+datos_ml <- v |> select(dia, all_of(VARIABLES_MODELO), sube) |> na.omit()
+n_tr <- floor(nrow(datos_ml) * 0.7)
+entreno <- datos_ml[1:n_tr, ]
+prueba  <- datos_ml[(n_tr + 2):nrow(datos_ml), ]   # +2: embargo de una vela
+
+rf <- ranger(factor(sube) ~ ., data = entreno |> select(-dia), num.trees = 400,
+             min.node.size = 25, probability = TRUE, importance = "permutation", seed = 42)
+prob <- predict(rf, prueba)$predictions[, "1"]
+pred <- as.numeric(prob > 0.5)
+
+mayoritaria <- as.numeric(mean(entreno$sube) >= 0.5)
+tibble(
+  modelo  = c("random_forest", "siempre_clase_mayoritaria", "persistencia"),
+  acierto = c(mean(pred == prueba$sube), mean(mayoritaria == prueba$sube),
+              mean(as.numeric(prueba$retorno > 0) == prueba$sube)),
+  auc     = c(auc(prueba$sube, prob), 0.5, 0.5)
+)
+```
+
+La importancia de `ranger` se calcula por permutación sobre las muestras
+*out-of-bag* del entrenamiento, no sobre la prueba: dice qué usó el modelo,
+no qué le sirve en el futuro.
+
+```{r importancia}
+tibble(variable = names(rf$variable.importance), importancia = rf$variable.importance) |>
+  ggplot(aes(importancia, reorder(variable, importancia))) + geom_col(fill = "#2c7fb8") +
+  geom_vline(xintercept = 0) + labs(y = NULL, title = "Importancia por permutación (OOB)")
+```
+
+# 8. Monte Carlo
+
+## Trayectorias de precio
+
+Remuestreo por bloques de 5 días para conservar parte del agrupamiento de la
+volatilidad.
+
+```{r mc-precio}
+dias_sim <- 90; n_sim <- 5000; bloque <- 5
+n_bloques <- ceiling(dias_sim / bloque)
+caminos <- replicate(n_sim, {
+  ini <- sample.int(length(r) - bloque + 1, n_bloques, replace = TRUE)
+  idx <- as.vector(outer(0:(bloque - 1), ini, "+"))[1:dias_sim]
+  precio * exp(c(0, cumsum(r[idx])))
+})
+
+bandas <- apply(caminos, 1, quantile, c(0.05, 0.25, 0.5, 0.75, 0.95)) |> t() |>
+  as_tibble() |> mutate(dia = 0:dias_sim)
+ggplot(bandas, aes(dia)) +
+  geom_ribbon(aes(ymin = `5%`, ymax = `95%`), fill = "#2c7fb8", alpha = 0.2) +
+  geom_ribbon(aes(ymin = `25%`, ymax = `75%`), fill = "#2c7fb8", alpha = 0.35) +
+  geom_line(aes(y = `50%`)) +
+  labs(title = "Precio a 90 días: bandas 5-95% y 25-75%", y = NULL)
+
+final <- caminos[dias_sim + 1, ]
+c(prob_termina_abajo = mean(final < precio),
+  prob_toca_menos_20 = mean(apply(caminos, 2, min) <= 0.8 * precio))
+```
+
+## Simulación de la cuenta
+
+```{r mc-cuenta}
+simular_cuenta <- function(acierto, rb, riesgo, n_op = 200, n_sim = 10000, capital = 10000) {
+  gana <- matrix(runif(n_op * n_sim) < acierto, n_sim)
+  factor <- ifelse(gana, 1 + riesgo * rb, 1 - riesgo)
+  cbind(capital, capital * t(apply(factor, 1, cumprod)))
+}
+resumir <- function(curvas, acierto, rb) {
+  dd <- apply(curvas, 1, \(x) min(x / cummax(x) - 1))
+  c(esperanza_R = acierto * rb - (1 - acierto),
+    acierto_minimo = 1 / (1 + rb),
+    capital_mediano = median(curvas[, ncol(curvas)]),
+    prob_perdida = mean(curvas[, ncol(curvas)] < curvas[, 1]),
+    drawdown_mediano = median(dd),
+    prob_drawdown_50 = mean(dd <= -0.5))
+}
+
+rbind(riesgo_1  = resumir(simular_cuenta(0.45, 2, 0.01), 0.45, 2),
+      riesgo_10 = resumir(simular_cuenta(0.45, 2, 0.10), 0.45, 2),
+      esperanza_cero = resumir(simular_cuenta(1/3, 2, 0.01), 1/3, 2))
+```
+
+Mismo sistema, misma ventaja: arriesgando el 10% por operación la mediana
+final crece más, pero casi todas las cuentas atraviesan caídas de más del 50%.
+Con esperanza cero y fracción fija, la mediana termina perdiendo.
+
+```{r exportar, include = FALSE}
+write_csv(v, file.path(SALIDA, "variables_diarias.csv"))
+write_csv(tabla_senales, file.path(SALIDA, "senales.csv"))
+write_csv(por_hora, file.path(SALIDA, "patron_hora.csv"))
+write_csv(por_dia, file.path(SALIDA, "patron_dia.csv"))
+```

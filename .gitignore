@@ -19,5 +19,11 @@ investigacion/**/*.pdf
 investigacion/proyecto_de_tesis/
 # Generados: se rehacen solos en cada ejecucion.
 reports/dashboard.html
+reports/laboratorio/
+reports/riesgo/
+laboratorio/r/*.html
+laboratorio/r/*_files/
+laboratorio/r/.Rproj.user/
+.ipynb_checkpoints/
 investigacion/busquedas/*/openalex_*.json
 investigacion/busquedas/*/alicia_*.json

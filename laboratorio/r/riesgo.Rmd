@@ -1,0 +1,121 @@
+---
+title: "Riesgo: backtest del VaR y Monte Carlo — R"
+output:
+  html_document:
+    toc: true
+    df_print: kable
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 10, fig.height = 4.5)
+options(digits = 4)
+```
+
+Contraste independiente, en R, de lo que calcula `python -m cryptoquant riesgo`.
+Python pronostica el VaR de cada día con las posiciones del modelo y lo exporta.
+Aquí se recalculan las pruebas de Kupiec y Christoffersen **desde cero** sobre
+esas mismas series y se comparan con las de Python. Si difieren, alguna de las
+dos implementaciones está mal.
+
+Ejecute antes `python -m cryptoquant riesgo` desde la raíz del proyecto.
+
+```{r paquetes}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+theme_set(theme_minimal(base_size = 11))
+
+DIR <- file.path("..", "..", "reports", "riesgo")
+stopifnot("Ejecute antes: python -m cryptoquant riesgo" = file.exists(file.path(DIR, "estado.json")))
+ALPHA <- 0.95
+METODOS <- c("historico", "normal", "t", "garch_t")
+```
+
+# Las pruebas, escritas a mano
+
+Kupiec contrasta la **frecuencia** de las excepciones; Christoffersen, su
+**independencia**: si una excepción hace más probable la siguiente, el VaR no
+reacciona a tiempo a los cambios de régimen.
+
+```{r pruebas}
+xlogy <- function(x, y) ifelse(x == 0, 0, x * log(y))
+
+kupiec <- function(exc, alpha) {
+  n <- length(exc); x <- sum(exc); p <- 1 - alpha; ph <- x / n
+  lr <- -2 * (xlogy(n - x, 1 - p) + xlogy(x, p) - xlogy(n - x, 1 - ph) - xlogy(x, ph))
+  c(n = n, excepciones = x, tasa = ph, lr_kupiec = lr, p_kupiec = pchisq(lr, 1, lower.tail = FALSE))
+}
+
+christoffersen <- function(exc) {
+  a <- head(exc, -1); b <- tail(exc, -1)
+  n00 <- sum(!a & !b); n01 <- sum(!a & b); n10 <- sum(a & !b); n11 <- sum(a & b)
+  p0 <- if (n00 + n01) n01 / (n00 + n01) else 0
+  p1 <- if (n10 + n11) n11 / (n10 + n11) else 0
+  p  <- (n01 + n11) / max(1, n00 + n01 + n10 + n11)
+  ll0 <- xlogy(n00 + n10, 1 - p) + xlogy(n01 + n11, p)
+  ll1 <- xlogy(n00, 1 - p0) + xlogy(n01, p0) + xlogy(n10, 1 - p1) + xlogy(n11, p1)
+  lr <- max(0, -2 * (ll0 - ll1))
+  c(lr_independencia = lr, p_independencia = pchisq(lr, 1, lower.tail = FALSE))
+}
+```
+
+# Backtest sobre los pronósticos de Python
+
+Solo cuentan los días con exposición: en efectivo el VaR es cero y no hay
+riesgo de mercado que medir.
+
+```{r backtest}
+carteras <- c("modelo", "equiponderada", "BTC")
+resultado <- lapply(carteras, function(cartera) {
+  t <- read_csv(file.path(DIR, paste0("var_", cartera, ".csv")), show_col_types = FALSE) |>
+    filter(exposicion >= 0.01)
+  lapply(METODOS, function(m) {
+    exc <- -t$retorno > t[[paste0("var_", m)]]
+    k <- kupiec(exc, ALPHA); ch <- christoffersen(exc)
+    tibble(cartera = cartera, metodo = m, !!!as.list(k), !!!as.list(ch),
+           p_cc = pchisq(k[["lr_kupiec"]] + ch[["lr_independencia"]], 2, lower.tail = FALSE))
+  }) |> bind_rows()
+}) |> bind_rows() |>
+  mutate(aceptado = p_kupiec > 0.05 & p_cc > 0.05)
+
+resultado |> select(cartera, metodo, n, excepciones, tasa, p_kupiec, p_independencia, aceptado)
+```
+
+## ¿Coincide con Python?
+
+```{r contraste}
+py <- read_csv(file.path(DIR, "validacion_var.csv"), show_col_types = FALSE) |>
+  filter(alpha == ALPHA)
+inner_join(resultado, py, by = c("cartera", "metodo"), suffix = c("_r", "_py")) |>
+  summarise(dif_kupiec = max(abs(p_kupiec_r - p_kupiec_py)),
+            dif_independencia = max(abs(p_independencia_r - p_independencia_py)),
+            excepciones_distintas = sum(excepciones_r != excepciones_py),
+            veredictos_distintos = sum(aceptado_r != aceptado_py))
+```
+
+# El modelo frente a su VaR
+
+```{r grafico}
+t <- read_csv(file.path(DIR, "var_modelo.csv"), show_col_types = FALSE) |> tail(365)
+t |>
+  mutate(excepcion = -retorno > var_garch_t & exposicion >= 0.01) |>
+  ggplot(aes(fecha)) +
+  geom_col(aes(y = retorno, fill = excepcion), width = 1) +
+  geom_line(aes(y = -var_garch_t), colour = "#2c7fb8") +
+  scale_fill_manual(values = c(`FALSE` = "grey60", `TRUE` = "#d1495b"), guide = "none") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Retorno diario del sistema y VaR GARCH-t previsto la víspera",
+       subtitle = "En rojo, los días en que la pérdida superó el VaR", x = NULL, y = NULL)
+```
+
+# Riesgo a futuro
+
+```{r futuro}
+read_csv(file.path(DIR, "riesgo_futuro.csv"), show_col_types = FALSE) |>
+  select(serie, horizonte_dias, prob_perdida, retorno_p5, prob_caida_10, prob_caida_20, prob_caida_50)
+```
+
+La fila `equiponderada_igual_vol` es la inversión pasiva reducida hasta la
+volatilidad del modelo: la comparación justa, porque cualquiera reduce el
+riesgo invirtiendo menos.

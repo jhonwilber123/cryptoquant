@@ -59,6 +59,10 @@ python -m cryptoquant pairs                # pares cointegrados (valor relativo)
 python -m cryptoquant backtest --compare   # backtest walk-forward + comparativa
 python -m cryptoquant recommend --capital 5000
 python -m cryptoquant dashboard --open    # panel visual en el navegador
+python -m cryptoquant laboratorio          # de las velas al modelo, paso a paso
+python -m cryptoquant riesgo               # VaR del modelo y de la pasiva, y si es de fiar
+python -m cryptoquant cartera --tengo "BTC=0.05,ETH=1.2,USDT=500"
+python -m cryptoquant evidencia            # filtro para cualquier idea de ganancia
 
 python -m cryptoquant forward init       # pre-registrar hipótesis (una vez)
 python -m cryptoquant forward record     # registrar la decisión de hoy (a diario)
@@ -89,6 +93,9 @@ regenera en cada pasada, así que siempre refleja el último estado.
 - **Histórico** — curva de capital y caídas frente a buy & hold, con el
   veredicto honesto: el riesgo está controlado, la ventaja no está demostrada.
   Incluye la comparación justa, contra buy & hold a igual volatilidad.
+- **Riesgo** — VaR de mañana del sistema y de la pasiva, qué métodos de VaR
+  han acertado en el pasado y probabilidad de caídas a 1, 3 y 12 meses. Lo
+  genera `python -m cryptoquant riesgo`.
 - **Mercado** — precio, tendencia y volatilidad de cada activo.
 
 Es de solo lectura: no descarga datos, no entrena modelos y no toca el diario.
@@ -369,6 +376,91 @@ hace sola si el USB está conectado. `scripts\sincronizar.ps1 -Codigo` lleva el
 código al PC: antes pasa los tests en el USB; después, ya en el PC, vuelve a
 pasarlos y recalcula todas las decisiones del diario. Si algo falla, restaura el
 código anterior.
+
+---
+
+## Laboratorio — [`laboratorio/`](laboratorio/README.md)
+
+El recorrido didáctico que hay debajo del sistema, en ocho pasos y en dos
+lenguajes: velas de Binance y CSV, procesamiento con dplyr y ggplot2,
+indicadores como variables, colas gruesas y estadística de señales, series de
+tiempo y ARIMA, GARCH(1,1) aplicado al stop y al tamaño, random forest con
+línea base, y Monte Carlo del precio y de la cuenta.
+
+```
+python -m cryptoquant laboratorio
+```
+
+La versión en Python vive en `cryptoquant/laboratorio/` con su notebook; la de
+R, en `laboratorio/r/laboratorio.Rmd`. Ambas parten del mismo CSV y producen
+las mismas variables. El laboratorio no toca `data/cache/` ni el diario.
+
+---
+
+## Riesgo — [`cryptoquant/riesgo/`](cryptoquant/riesgo/)
+
+Medir el riesgo solo sirve si la medida acierta. Esta capa mide y comprueba;
+no decide nada ni toca el diario.
+
+### ¿Es fiable el VaR? — `riesgo`
+
+Recalcula el backtest, reconstruye la posición de cada cierre y pronostica el
+VaR y el CVaR del día siguiente con cuatro métodos (histórico, normal, t de
+Student y GARCH-t). Después comprueba cada uno contra lo que pasó: Kupiec
+(¿se supera con la frecuencia prometida?) y Christoffersen (¿las excepciones
+llegan en rachas?). Hace lo mismo para la pasiva equiponderada y para todo en
+BTC, y estima con Monte Carlo por bloques la probabilidad de caídas a 1, 3 y
+12 meses.
+
+Con datos de 2021 a 2026, al 95 %:
+
+| | Histórico | Normal | t | GARCH-t |
+|---|---|---|---|---|
+| Sistema | aceptado | rechazado | aceptado | aceptado |
+| Buy & hold equiponderado | rechazado (rachas) | rechazado | rechazado (rachas) | **aceptado** |
+| Todo en BTC | aceptado | rechazado | rechazado (rachas) | **aceptado** |
+
+Solo el GARCH-t mide bien el riesgo de las tres carteras; el normal no lo mide
+bien en ninguna. En el Monte Carlo a un año, la probabilidad de una caída del
+20 % es del 99 % con la pasiva, del 0,4 % con la pasiva reducida a la misma
+volatilidad y del 0,1 % con el sistema. La comparación justa es la segunda.
+
+`laboratorio/r/riesgo.Rmd` recalcula las pruebas en R desde cero y comprueba
+que coinciden con las de Python.
+
+### Su cartera — `cartera`
+
+```
+python -m cryptoquant cartera --tengo "BTC=0.05,ETH=1.2,SOL=10,USDT=500"
+```
+
+Cuánto puede perder mañana en un mal día (en dinero, por cada método, y si
+ese método habría acertado en el pasado con esa misma cartera), el rango de
+resultados del próximo mes, qué parte del riesgo aporta cada activo, y el
+stop y el tamaño de una entrada nueva según la volatilidad prevista.
+
+### Ideas para ganar dinero — `evidencia`
+
+Toda señal nueva pasa por el mismo filtro antes de proponerse: que no mire al
+futuro, que se mida solo fuera de muestra, con al menos 30 eventos, que bata a
+su base tras corregir por comparaciones múltiples y que gane después de
+costes. El umbral se endurece con cada idea distinta evaluada, que queda
+anotada en `data/evidencia/registro.jsonl`: probar hasta que alguna salga
+deja de funcionar.
+
+Las 8 señales del laboratorio no pasan. `bollinger_rompe_inferior` tiene
+p = 0,023: evaluada sola, habría pasado; como octava idea, no.
+
+Una idea propia se evalúa desde Python:
+
+```python
+from cryptoquant.riesgo.evidencia import evaluar_senal
+v = evaluar_senal("mi_idea", lambda velas: ..., velas_por_activo, horizonte=5)
+print(v.pasa, v.motivos)
+```
+
+Pasar el filtro la convierte en candidata, no en parte del sistema: cambiar la
+estrategia exige una enmienda del forward test.
 
 ---
 

@@ -196,6 +196,12 @@ footer p{margin:0 0 6px;max-width:90ch}
     <div id="backtest"></div>
   </section>
 
+  <section aria-labelledby="h-risk">
+    <h2 id="h-risk">Riesgo: cuánto se puede perder, y si la cifra es de fiar</h2>
+    <p class="lede" id="risk-lede"></p>
+    <div id="risk"></div>
+  </section>
+
   <section aria-labelledby="h-mkt">
     <h2 id="h-mkt">Mercado</h2>
     <p class="lede" id="mkt-lede"></p>
@@ -1101,6 +1107,80 @@ function assetColor(a) {
     ? "La última columna es la comparación justa: meter solo una parte en buy & hold para tener la misma volatilidad que el sistema. Capital inicial: " + money(B.capital) + " " + QUOTE + "."
     : "Capital inicial: " + money(B.capital) + " " + QUOTE + ".")]);
   box.appendChild(wrapM);
+})();
+
+(function risk() {
+  var K = S.risk, box = document.getElementById("risk"), lede = document.getElementById("risk-lede");
+  if (!K) { box.appendChild(empty("Todavía no se ha medido el riesgo. Se genera con: python -m cryptoquant riesgo")); return; }
+  var A = K.alpha, NOM = {historico: "Histórico", normal: "Normal", t: "t de Student", garch_t: "GARCH-t"};
+  var CART = {modelo: "Sistema", equiponderada: "Buy & hold equiponderado", BTC: "Todo en BTC",
+              equiponderada_igual_vol: "Buy & hold a igual volatilidad"};
+  lede.textContent = "VaR al " + pct(A, 0) + ": la pérdida de un día que solo se supera 1 de cada " +
+    fmt(1 / (1 - A), 0) + " días. Datos hasta el " + dstr(K.fecha_datos) + "; medido el " +
+    DF.format(new Date(K.generado)) + ".";
+
+  function varDe(cartera, metodo) {
+    var r = K.var_manana.filter(function (x) { return x.cartera === cartera && x.metodo === metodo; })[0];
+    return r ? r["var"] : null;
+  }
+  var cap = CFG.initial_capital, vm = varDe("modelo", "garch_t");
+  box.appendChild(el("div", {"class": "tiles"}, [
+    tile("VaR de mañana · sistema", pct(vm, 2), "Invertido al " + pct(K.exposicion_hoy, 0) +
+      (cap ? " · " + money(vm * cap) + " " + QUOTE + " sobre " + money(cap) : "")),
+    tile("VaR de mañana · buy & hold", pct(varDe("equiponderada", "garch_t"), 2), "Equiponderado, GARCH-t"),
+    tile("VaR de mañana · todo en BTC", pct(varDe("BTC", "garch_t"), 2), "GARCH-t")
+  ]));
+
+  var val = K.validacion.filter(function (r) { return r.alpha === A; });
+  var metodos = ["historico", "normal", "t", "garch_t"];
+  var fiables = metodos.filter(function (m) {
+    return val.filter(function (r) { return r.metodo === m; }).every(function (r) { return r.aceptado; });
+  });
+  var normalMal = val.filter(function (r) { return r.metodo === "normal" && !r.aceptado; }).length;
+  box.appendChild(el("div", {"class": "verdict mt"}, [
+    verdict(fiables.length ? "good" : "warning",
+      fiables.length ? "VaR fiable: " + fiables.map(function (m) { return NOM[m]; }).join(", ") : "Ningún VaR es fiable en todas las carteras",
+      "Aceptado si, en el pasado, se superó con la frecuencia prometida (Kupiec) y sin rachas (Christoffersen), en todas las carteras."),
+    verdict(normalMal ? "warning" : "good", normalMal ? "El VaR normal falla" : "El VaR normal aguanta",
+      normalMal ? "Rechazado en " + normalMal + " de " + val.filter(function (r) { return r.metodo === "normal"; }).length +
+        " carteras: las colas de cripto son más gruesas que las de la normal." : "Pasa en todas las carteras.")
+  ]));
+
+  var M = K.serie && K.serie.modelo;
+  if (M && M.x.length > 20) {
+    var neg = M.var_garch_t.map(function (v) { return v == null ? null : -v; });
+    var exc = M.retorno.filter(function (r, i) { return M.var_garch_t[i] > 0 && -r > M.var_garch_t[i]; }).length;
+    box.appendChild(chartCard("El sistema frente a su VaR, último año",
+      "Retorno de cada día y el VaR GARCH-t que se había previsto la víspera. Cada día por debajo de la línea es una excepción: " +
+      exc + " en " + M.x.length + " días. Cuando el sistema está en efectivo, el VaR es cero.", {
+      x: M.x, zeroLine: true, height: 240,
+      series: [{name: "Retorno diario", short: "Retorno", color: "--s2", values: M.retorno},
+               {name: "VaR previsto (GARCH-t)", short: "VaR", color: "--s1", values: neg}],
+      yFormat: function (v) { return pct(v, 0); }, tipFormat: function (v) { return spct(v, 2); }
+    }));
+  }
+
+  var rows = val.map(function (r) {
+    return [CART[r.cartera] || r.cartera, NOM[r.metodo], fmt(r.excepciones, 0) + " de " + fmt(r.n, 0),
+            pct(r.tasa, 1), fmt(r.p_kupiec, 3), fmt(r.p_independencia, 3), fmt(r.cola_ratio, 2),
+            r.suficiente === false ? "Datos insuficientes" : r.aceptado ? "Aceptado" : "Rechazado"];
+  });
+  box.appendChild(el("div", {"class": "mt"}, [table(
+    ["Cartera", "Método", "Excepciones", "Tasa", "Kupiec p", "Independencia p", "Cola", "Veredicto"], rows,
+    "Backtest del VaR al " + pct(A, 0) + " (se espera una tasa del " + pct(1 - A, 0) +
+    "). Cola: pérdida media en las excepciones frente al CVaR previsto; 1 es exacto, más de 1 son colas peores de lo previsto.")]));
+
+  var F = K.futuro || [];
+  if (F.length) {
+    box.appendChild(el("div", {"class": "mt"}, [table(
+      ["Cartera", "Horizonte", "Prob. de perder", "Peor 5 %", "Caída > 10 %", "Caída > 20 %", "Caída > 50 %"],
+      F.map(function (r) {
+        return [CART[r.serie] || r.serie, fmt(r.horizonte_dias, 0) + " días", pct(r.prob_perdida, 0), spct(r.retorno_p5, 1),
+                pct(r.prob_caida_10, 1), pct(r.prob_caida_20, 1), pct(r.prob_caida_50, 1)];
+      }),
+      "Monte Carlo por bloques de la historia desde 2021. La fila a igual volatilidad es la comparación justa: " +
+      "cualquiera reduce el riesgo invirtiendo menos. Un escenario peor que toda esa historia no aparece.")]));
+  }
 })();
 
 (function market() {

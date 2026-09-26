@@ -97,6 +97,33 @@ catch {
     $code = 3
 }
 finally {
+    # Riesgo del modelo y de la pasiva, para la seccion de riesgo del panel.
+    # Solo una vez por barra diaria: si reports\riesgo\estado.json ya es de
+    # hoy (UTC), no se repite (recalcula el backtest, ~1 minuto). Nivel
+    # RIESGO, que el panel ignora al leer este log; nunca cambia el codigo de
+    # salida del registro.
+    try {
+        $ErrorActionPreference = "Continue"
+        $estado = Join-Path $ProjectDir "reports\riesgo\estado.json"
+        $hoy = (Get-Date).ToUniversalTime().Date
+        $fresco = (Test-Path $estado) -and ((Get-Item $estado).LastWriteTimeUtc -ge $hoy)
+        if (-not $fresco) {
+            $riesgo = & $Python -W "ignore::UserWarning" -m cryptoquant riesgo 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Log "RIESGO" "medido"
+            } else {
+                Write-Log "RIESGO" "no se pudo medir (codigo $LASTEXITCODE)"
+                foreach ($line in ($riesgo | Select-Object -Last 5)) {
+                    $text = "$line".TrimEnd()
+                    if ($text) { Add-Content -Path $logFile -Value "    $text" -Encoding utf8 }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Log "RIESGO" "no se pudo medir: $($_.Exception.Message)"
+    }
+
     # El panel se regenera SIEMPRE, tambien si el registro fallo: es justo
     # cuando mas importa que muestre el problema. Va con nivel PANEL, que el
     # panel ignora al leer este log; si no, un "regenerado" taparia un FALLO.

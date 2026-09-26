@@ -1,10 +1,14 @@
 """Interfaz de linea de comandos.
 
 Subcomandos:
-    analyze    Diagnostico econometrico del universo
-    pairs      Busqueda de pares cointegrados (valor relativo)
-    backtest   Backtest walk-forward con comparativa de metodos
-    recommend  Asignacion recomendada para hoy
+    analyze      Diagnostico econometrico del universo
+    pairs        Busqueda de pares cointegrados (valor relativo)
+    backtest     Backtest walk-forward con comparativa de metodos
+    recommend    Asignacion recomendada para hoy
+    laboratorio  De las velas al modelo, paso a paso (y CSV para R)
+    riesgo       Riesgo del modelo frente a la pasiva; backtest del VaR
+    cartera      Riesgo de una cartera concreta
+    evidencia    Filtro que toda senal nueva debe pasar
 """
 from __future__ import annotations
 
@@ -814,6 +818,373 @@ def cmd_dashboard(args, cfg: Config) -> int:
 
 
 # --------------------------------------------------------------------------
+def cmd_laboratorio(args, cfg: Config) -> int:
+    """Recorre de las velas al modelo y deja CSV y graficos para Python y R."""
+    from .laboratorio import informe
+
+    _echo(f"Laboratorio: {args.simbolo} {args.temporalidad} desde {args.desde}")
+    inf = informe.ejecutar(args.simbolo, args.temporalidad, args.desde, args.descargar,
+                           args.acierto, args.rb, args.riesgo, args.capital,
+                           graficos=not args.no_plots, semilla=cfg.seed)
+    R = inf.resultados
+    _echo(f"  Origen: {inf.origen} | {len(inf.velas)} velas, {len(inf.diario)} dias "
+          f"| {inf.diario.index[0].date()} a {inf.diario.index[-1].date()}")
+    _echo()
+
+    d, colas = R["distribucion"], R["colas"]
+    _echo("Distribucion de retornos diarios")
+    _echo("-" * 78)
+    _echo(f"  Curtosis en exceso {d['curtosis_exceso']:.1f} (normal: 0) | "
+          f"t de Student con {d['t_grados_libertad']:.1f} grados de libertad")
+    for k, fila in colas.iterrows():
+        _echo(f"  Movimientos > {k} sigmas: {fila['observados']:4.0f} observados, "
+              f"{fila['esperados_normal']:8.3f} esperados si fuera normal")
+    _echo()
+
+    s = R["senales"]
+    _echo("Senales tecnicas (a 5 dias, en la direccion de la senal)")
+    _echo("-" * 78)
+    for _, f in s[s["horizonte"] == 5].iterrows():
+        _echo(f"  {f['senal']:26s} n={f['eventos']:3d}  acierto {f['acierto']:.0%} "
+              f"(base {f['acierto_base']:.0%})  p={f['p_valor']:.2f}")
+    umbral = 0.05 / len(s)
+    _echo(f"  Significativas tras Bonferroni (p < {umbral:.4f}): "
+          f"{int((s['p_valor'] < umbral).sum())} de {len(s)}")
+    _echo()
+
+    lb, a = R["ljung_box"]["ljung_box_p_10"], R["arima"]
+    _echo("Series de tiempo")
+    _echo("-" * 78)
+    est = R["estacionariedad"]["adf_p"]
+    _echo(f"  ADF p: log-precio {est['log_precio']:.3f}, retorno {est['retorno_log']:.3f}")
+    _echo(f"  Ljung-Box p (10 rezagos): retorno {lb['retorno']:.3f}, "
+          f"retorno^2 {lb['retorno_cuadrado']:.2g}")
+    for k, t in R["calendario"].items():
+        _echo(f"  Por {k}: Kruskal p retorno {t.attrs['kruskal_p_retorno']:.3f}, "
+              f"volatilidad {t.attrs['kruskal_p_volatilidad']:.2g}")
+    _echo(f"  ARIMA{a['orden']}: RMSE {a['rmse_arima']:.3f} frente a {a['rmse_cero']:.3f} "
+          f"de predecir 0 ({a['mejora_sobre_cero']:+.2%})")
+    _echo()
+
+    g, ge, p = R["garch"], R["garch_eval"], R["plan"]
+    _echo("Volatilidad: GARCH(1,1)")
+    _echo("-" * 78)
+    _echo(f"  alpha {g['alpha']:.3f}  beta {g['beta']:.3f}  persistencia {g['persistencia']:.3f} "
+          f"(vida media de un shock: {g['vida_media_dias']:.0f} dias)")
+    _echo(f"  Sigma prevista para manana: {g['sigma_manana']:.2%} diaria, "
+          f"{g['sigma_manana_anual']:.0%} anual")
+    _echo(f"  Fuera de muestra, QLIKE (menor es mejor): GARCH {ge['qlike_garch']:.3f}, "
+          f"movil 20d {ge['qlike_movil']:.3f}")
+    _echo(f"  Compra a {p['precio']:,.2f}: stop {p['stop']:,.2f} ({p['distancia_stop_pct']:.1%}), "
+          f"objetivo {p['objetivo']:,.2f}")
+    _echo(f"  Tamano para arriesgar {args.riesgo:.1%} de {args.capital:,.0f}: "
+          f"{p['nominal']:,.2f} ({p['fraccion_capital']:.0%} del capital)")
+    _echo()
+
+    rf = R["bosque"]
+    _echo(f"Random forest (prueba desde {rf.inicio_prueba.date()})")
+    _echo("-" * 78)
+    for nombre, f in rf.metricas.iterrows():
+        _echo(f"  {nombre:18s} acierto {f['acierto']:.1%}  AUC {f['auc']:.3f}")
+    _echo(f"  p-valor frente a la mejor base: {rf.p_valor_vs_base:.3f}")
+    _echo(f"  Variables con mas importancia: {', '.join(rf.importancia.index[:3])}")
+    _echo()
+
+    mp, mc, par = R["mc_precio"], R["mc_cuenta"], R["mc_parametros"]
+    _echo("Monte Carlo")
+    _echo("-" * 78)
+    _echo(f"  Precio a 90 dias: mediana {mp['precio_p50']:,.0f}, "
+          f"90% entre {mp['precio_p5']:,.0f} y {mp['precio_p95']:,.0f}; "
+          f"prob. de tocar -20%: {mp['prob_toca_menos_20']:.0%}")
+    _echo(f"  Cuenta con acierto {par['acierto']:.0%}, R:B 1:{par['riesgo_beneficio']:g}, "
+          f"riesgo {par['riesgo']:.1%} por operacion, 200 operaciones:")
+    _echo(f"    esperanza {mc['esperanza_por_operacion_R']:+.2f} R por operacion "
+          f"(acierto minimo rentable {mc['acierto_minimo_rentable']:.0%})")
+    _echo(f"    capital final mediano {mc['capital_mediano_final']:,.0f} | "
+          f"prob. de perder {mc['prob_perdida']:.1%} | drawdown mediano {mc['drawdown_mediano']:.0%}")
+    _echo(f"    racha perdedora mediana: {mc['racha_perdedora_mediana']:.0f} operaciones seguidas")
+    _echo()
+    _echo(f"Archivos en {inf.archivos[0].parent}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Riesgo
+# --------------------------------------------------------------------------
+_NOMBRE_METODO = {"historico": "Historico", "normal": "Normal", "t": "t de Student",
+                  "garch_t": "GARCH-t"}
+
+
+def cmd_riesgo(args, cfg: Config) -> int:
+    """Riesgo del modelo frente a la pasiva, y si el VaR con que se mide es de fiar."""
+    from .riesgo import informe
+
+    ohlcv, closes, _ = _load(cfg, args.refresh)
+    _echo("Recalculando el backtest y midiendo el riesgo (alrededor de un minuto)...")
+    inf = informe.ejecutar(ohlcv, closes, cfg, n_sim=args.simulaciones)
+    _echo()
+
+    v = inf.validacion
+    for alpha in sorted(v["alpha"].unique()):
+        _echo(f"Backtest del VaR al {alpha:.0%} a un dia (dias invertidos)")
+        _echo("-" * 78)
+        _echo(f"  {'':15s}{'Metodo':14s}{'Excep.':>8s}{'Tasa':>8s}{'Kupiec p':>10s}"
+              f"{'Indep. p':>10s}{'Cola':>7s}  Veredicto")
+        for _, f in v[v["alpha"] == alpha].iterrows():
+            _echo(f"  {f['cartera']:15s}{_NOMBRE_METODO[f['metodo']]:14s}{f['excepciones']:8d}"
+                  f"{f['tasa']:8.1%}{f['p_kupiec']:10.3f}{f['p_independencia']:10.3f}"
+                  f"{f['cola_ratio']:7.2f}  {_veredicto(f)}")
+        _echo(f"  Tasa esperada: {1 - alpha:.0%}. Cola: perdida media en las excepciones / CVaR "
+              f"previsto (1 = exacto).")
+        _echo()
+
+    a0 = v["alpha"].min()
+    ok = v[(v["alpha"] == a0)].groupby("metodo")["aceptado"].all()
+    fiables = [_NOMBRE_METODO[m] for m, b in ok.items() if b]
+    _echo("Lectura:")
+    _echo(f"  Metodos aceptados al {a0:.0%} en todas las carteras: "
+          f"{', '.join(fiables) if fiables else 'ninguno'}.")
+    _echo("  Un VaR rechazado por independencia falla en rachas: acierta en calma")
+    _echo("  y se queda corto justo cuando el mercado cambia de regimen.")
+    _echo()
+
+    _echo(f"VaR para manana al {a0:.0%} (exposicion actual del modelo: {inf.exposicion_hoy:.0%})")
+    _echo("-" * 78)
+    hoy = inf.var_hoy.pivot(index="cartera", columns="metodo", values="var")
+    for cartera, fila in hoy.iterrows():
+        _echo(f"  {cartera:15s}" + "  ".join(f"{_NOMBRE_METODO[m]} {fila[m]:.2%}"
+                                             for m in ("historico", "garch_t")))
+    cap = args.capital or cfg.backtest.initial_capital
+    g = hoy.loc["modelo", "garch_t"]
+    _echo(f"  Con {cap:,.0f} en el modelo: en 1 de cada 20 dias se perderian mas de "
+          f"{g * cap:,.0f}.")
+    _echo()
+
+    _echo("Riesgo a futuro (Monte Carlo por bloques de la historia 2021-hoy)")
+    _echo("-" * 78)
+    _echo(f"  {'':26s}{'Dias':>5s}{'P(perder)':>11s}{'Peor 5%':>10s}{'P(caida>10%)':>14s}"
+          f"{'P(caida>20%)':>14s}")
+    for _, f in inf.futuro.iterrows():
+        _echo(f"  {f['serie']:26s}{f['horizonte_dias']:5d}{f['prob_perdida']:11.0%}"
+              f"{f['retorno_p5']:10.1%}{f['prob_caida_10']:14.1%}{f['prob_caida_20']:14.1%}")
+    _echo("  'igual_vol': la pasiva reducida hasta la volatilidad del modelo. Es la")
+    _echo("  comparacion justa: cualquiera puede bajar el riesgo invirtiendo menos.")
+    _echo()
+    _echo(f"Archivos en {inf.archivos[0].parent}  (el panel los muestra: dashboard)")
+    return 0
+
+
+def _precios_cartera(cfg: Config, activos: list[str], refresh: bool) -> tuple[pd.DataFrame, str]:
+    """Cierres diarios: del universo, de la cache; el resto, descargados en memoria."""
+    from .laboratorio.datos import a_diario, descargar_velas
+
+    try:
+        _, closes, _ = load_universe(cfg, force_refresh=refresh)
+    except Exception:  # noqa: BLE001 - sin cache ni red, se intenta activo a activo
+        closes = pd.DataFrame()
+    fuera = [a for a in activos if a not in closes.columns]
+    extra = {}
+    for a in fuera:
+        v = descargar_velas(f"{a}/{cfg.data.quote}", "1d", "2021-01-01")
+        extra[a] = a_diario(v)["close"] if len(v) else v["close"]
+    if extra:
+        closes = pd.concat([closes, pd.DataFrame(extra)], axis=1)
+    return closes, ", ".join(fuera)
+
+
+def cmd_cartera(args, cfg: Config) -> int:
+    from .riesgo import cartera as rc
+
+    try:
+        tenencias = rc.parsear(args.tengo)
+    except ValueError as exc:
+        _echo(f"ERROR: {exc}")
+        return 2
+    activos = [a for a, v in tenencias.items() if a not in rc.EFECTIVO and v > 0]
+    if not activos:
+        raise ValueError("la cartera solo tiene efectivo: no hay riesgo de mercado que medir")
+    closes, descargados = _precios_cartera(cfg, activos, args.refresh)
+    if descargados:
+        _echo(f"Fuera del universo del sistema, descargados de Binance: {descargados}")
+    r = rc.analizar(tenencias, closes, alpha=args.confianza, horizonte=args.dias,
+                    riesgo_por_operacion=args.riesgo)
+    _echo(f"Precios de cierre del {r.fecha.date()} (UTC)")
+    ultimo = closes.index.max()
+    if r.fecha < ultimo:
+        _echo(f"  AVISO: algun activo no tiene cierre despues del {r.fecha.date()}; hay datos "
+              f"hasta el {ultimo.date()}. Se usa la ultima fecha comun a todos.")
+    _echo()
+
+    _echo(f"Su cartera: {r.total:,.2f} {cfg.data.quote}")
+    _echo("-" * 78)
+    for a, f in r.posiciones.iterrows():
+        _echo(f"  {a:9s}{f['valor']:14,.2f}  {f['peso']:6.1%} del dinero  "
+              f"{f['contribucion_riesgo']:6.1%} del riesgo")
+    _echo("  Un activo puede ser el 30% del dinero y el 50% del riesgo: pesa su")
+    _echo("  volatilidad y cuanto se mueve con el resto.")
+    _echo()
+
+    a = f"{args.confianza:.0%}"
+    _echo(f"Un mal dia: perdida que solo se supera 1 de cada {1 / (1 - args.confianza):.0f} dias ({a})")
+    _echo("-" * 78)
+    val = r.validacion
+    for m, f in r.var_manana.iterrows():
+        ok = val.loc[m]
+        if not ok["suficiente"]:
+            juicio = f"sin datos suficientes: {int(ok['n'])} dias, hacen falta 250"
+        elif ok["aceptado"]:
+            juicio = f"fiable: fallo el {ok['tasa']:.1%}"
+        elif ok["p_kupiec"] <= 0.05:
+            juicio = f"NO fiable: fallo el {ok['tasa']:.1%}"
+        else:
+            juicio = f"NO fiable: fallo el {ok['tasa']:.1%}, pero en rachas"
+        _echo(f"  {_NOMBRE_METODO[m]:14s} VaR {f['var']:10,.2f} ({f['var_pct']:5.2%})   "
+              f"si se supera, de media {f['cvar']:10,.2f}   [{juicio}]")
+    _echo("  'fiable': con esta misma cartera, ese metodo habria acertado en el")
+    _echo(f"  pasado (Kupiec y Christoffersen, p > 0.05). Se esperaba fallar el {1 - args.confianza:.0%}.")
+    _echo()
+
+    m = r.mes
+    _echo(f"Proximos {args.dias} dias (Monte Carlo, 10 000 escenarios)")
+    _echo("-" * 78)
+    _echo(f"  Resultado mediano     : {m['retorno_mediano']:+.1%} ({m['retorno_mediano'] * r.total:+,.2f})")
+    _echo(f"  Peor 5% de escenarios : {m['retorno_p5']:+.1%} ({m['retorno_p5_dinero']:+,.2f}) o peor")
+    _echo(f"  Media de ese peor 5%  : {m['cvar_5']:+.1%} ({m['cvar_5_dinero']:+,.2f})")
+    _echo(f"  Probabilidad de perder: {m['prob_perdida']:.0%}")
+    _echo(f"  Caida de mas del 10%  : {m['prob_caida_10']:.0%}   de mas del 20%: {m['prob_caida_20']:.0%}")
+    _echo("  Las colas son lo fiable. El mediano hereda la tendencia de la historia")
+    _echo("  remuestreada; no es una prevision del precio.")
+    _echo()
+
+    _echo(f"Por activo (entrada nueva arriesgando {args.riesgo:.1%} del total)")
+    _echo("-" * 78)
+    for act, f in r.por_activo.iterrows():
+        _echo(f"  {act:6s} vol. prevista {f['sigma_anual']:5.0%} anual | mal dia (t) "
+              f"{f['var_1d_posicion']:9,.2f} | stop {_precio(f['stop'])} (-{f['distancia_stop_pct']:.1%})"
+              f" | tamano {f['tamano_entrada']:,.2f}")
+    _echo()
+    _echo("Mide riesgo; no predice precios ni es una recomendacion de inversion.")
+    return 0
+
+
+def _veredicto(f) -> str:
+    if not f["suficiente"]:
+        return f"sin datos ({int(f['n'])} dias)"
+    return "aceptado" if f["aceptado"] else "RECHAZADO"
+
+
+def _precio(x: float) -> str:
+    return f"{x:,.2f}" if x >= 1 else f"{x:.4g}"
+
+
+def cmd_evidencia(args, cfg: Config) -> int:
+    from .laboratorio import cuantitativo, variables
+    from .riesgo import evidencia as ev
+
+    if args.registro:
+        regs = ev._leer_registro()
+        umbral = 0.05 / max(1, ev.ideas_evaluadas())
+        _echo(f"{ev.ideas_evaluadas()} ideas distintas evaluadas ({len(regs)} evaluaciones); "
+              f"umbral de hoy p < {umbral:.5f}")
+        for r in regs[-args.ultimas:]:
+            p = r["p_valor"]
+            hoy = "pasaria hoy" if r["pasa"] and p is not None and p < umbral else ""
+            _echo(f"  {r['fecha_utc'][:10]}  {r['senal']:28s} h={r['parametros']['horizonte']:<3d}"
+                  f" {'PASO' if r['pasa'] else 'no paso':8s} p={p if p is None else round(p, 4)}"
+                  f"  {hoy}")
+        _echo("Una idea que paso con el umbral de entonces debe volver a pasar con el de hoy.")
+        return 0
+
+    catalogo = list(cuantitativo.senales(variables.preparar_variables(_demo_velas())).columns)
+    nombres = catalogo if args.senal == "todas" else [args.senal]
+    if any(n not in catalogo for n in nombres):
+        _echo(f"Senales disponibles: {', '.join(catalogo)}, o 'todas'.")
+        _echo("Para una idea propia, use riesgo.evidencia.evaluar_senal desde Python.")
+        return 2
+
+    ohlcv, _, _ = _load(cfg, args.refresh)
+    pasan = 0
+    for nombre in nombres:
+        gen = (lambda n: lambda df: cuantitativo.senales(variables.preparar_variables(df))[n])(nombre)
+        v = ev.evaluar_senal(nombre, gen, ohlcv, horizonte=args.horizonte)
+        pasan += v.pasa
+        _echo(f"{nombre} (a {v.horizonte} dias, fuera de muestra desde {v.desde})")
+        _echo(f"  {v.eventos} eventos | acierto {v.acierto:.1%} frente a {v.acierto_base:.1%} de base"
+              f" | neto {v.retorno_neto_medio:+.2%} por operacion")
+        _echo(f"  {'PASA' if v.pasa else 'NO PASA'}" +
+              ("" if v.pasa else ": " + "; ".join(v.motivos)))
+        _echo()
+    _echo(f"{pasan} de {len(nombres)} pasan. Ideas distintas evaluadas hasta hoy: "
+          f"{ev.ideas_evaluadas()} (umbral actual p < {0.05 / max(1, ev.ideas_evaluadas()):.5f}).")
+    if pasan:
+        _echo("Pasar el filtro la hace candidata, no parte del sistema: incorporarla")
+        _echo("cambiaria la estrategia del forward test y exige una enmienda registrada.")
+    return 0
+
+
+def _en(lo: float, hi: float, con_lo: bool = False, con_hi: bool = False):
+    """Tipo de argparse: numero finito entre lo y hi (limites excluidos salvo
+    que se indique). Rechaza nan e inf, que float() acepta sin rechistar."""
+    def tipo(texto: str) -> float:
+        try:
+            x = float(texto)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{texto!r} no es un numero") from None
+        ok_lo = x >= lo if con_lo else x > lo
+        ok_hi = x <= hi if con_hi else x < hi
+        if not (np.isfinite(x) and ok_lo and ok_hi):
+            raise argparse.ArgumentTypeError(
+                f"{texto} fuera de rango: debe estar en {'[' if con_lo else '('}{lo:g}, "
+                f"{hi:g}{']' if con_hi else ')'}")
+        return x
+    return tipo
+
+
+def _entero(lo: int, hi: int):
+    def tipo(texto: str) -> int:
+        try:
+            x = int(texto)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{texto!r} no es un entero") from None
+        if not lo <= x <= hi:
+            raise argparse.ArgumentTypeError(f"{x} fuera de rango: debe estar entre {lo} y {hi}")
+        return x
+    return tipo
+
+
+def _sin_traceback(cmd):
+    """Errores de uso y de datos como un mensaje, no como un volcado de pila.
+
+    Solo para los comandos de laboratorio y riesgo: el resto del sistema deja
+    que sus fallos lleguen enteros al log de la tarea programada.
+    """
+    from functools import wraps
+
+    from .riesgo.evidencia import RegistroCorrupto
+
+    @wraps(cmd)
+    def envuelto(args, cfg):
+        try:
+            return cmd(args, cfg)
+        except (ValueError, KeyError, FileNotFoundError, RegistroCorrupto) as exc:
+            _echo(f"ERROR: {exc.args[0] if isinstance(exc, KeyError) and exc.args else exc}")
+            return 2
+        except Exception as exc:
+            if type(exc).__module__.split(".")[0] == "ccxt":  # red, simbolo inexistente...
+                _echo(f"ERROR de Binance: {type(exc).__name__}: {str(exc)[:200]}")
+                return 2
+            raise
+    return envuelto
+
+
+def _demo_velas() -> pd.DataFrame:
+    """Velas minimas solo para listar el catalogo de senales."""
+    from .data.sources import _synthetic
+
+    return _synthetic("DEMO/USDT", "1d", "2020-01-01", 120, seed=0)
+
+
+# --------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="cryptoquant",
@@ -849,6 +1220,44 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--open", action="store_true", help="abrirlo en el navegador")
     d.add_argument("--out", help="ruta de salida (por defecto reports/dashboard.html)")
     d.set_defaults(func=cmd_dashboard)
+
+    lab = sub.add_parser("laboratorio",
+                         help="de las velas al modelo, paso a paso (CSV para la version en R)")
+    lab.add_argument("--simbolo", default="BTC")
+    lab.add_argument("--temporalidad", default="1h", choices=["1h", "4h", "1d"],
+                     help="intradia permite ver patrones por hora")
+    lab.add_argument("--desde", default="2022-01-01")
+    lab.add_argument("--descargar", action="store_true",
+                     help="volver a descargar aunque ya exista el CSV")
+    lab.add_argument("--acierto", type=_en(0, 1, con_lo=True, con_hi=True), default=0.45,
+                     help="Monte Carlo de la cuenta")
+    lab.add_argument("--rb", type=_en(0, 100), default=2.0, help="relacion riesgo-beneficio 1:rb")
+    lab.add_argument("--riesgo", type=_en(0, 1), default=0.01,
+                     help="fraccion arriesgada por operacion")
+    lab.add_argument("--capital", type=_en(0, 1e15), default=10_000.0)
+    lab.add_argument("--no-plots", action="store_true")
+    lab.set_defaults(func=_sin_traceback(cmd_laboratorio))
+
+    rg = sub.add_parser("riesgo", help="riesgo del modelo frente a la pasiva y backtest del VaR")
+    rg.add_argument("--capital", type=_en(0, 1e15), help="para expresar el VaR en dinero")
+    rg.add_argument("--simulaciones", type=_entero(100, 1_000_000), default=10_000)
+    rg.set_defaults(func=_sin_traceback(cmd_riesgo))
+
+    ca = sub.add_parser("cartera", help="riesgo de su cartera: VaR, escenarios, stop y tamano")
+    ca.add_argument("--tengo", required=True,
+                    help="unidades por activo, p. ej. 'BTC=0.05,ETH=1.2,USDT=500'")
+    ca.add_argument("--confianza", type=_en(0.5, 1), default=0.95)
+    ca.add_argument("--dias", type=_entero(1, 3650), default=21, help="horizonte del Monte Carlo")
+    ca.add_argument("--riesgo", type=_en(0, 1, con_hi=True), default=0.01,
+                    help="fraccion del total arriesgada por entrada nueva")
+    ca.set_defaults(func=_sin_traceback(cmd_cartera))
+
+    ev = sub.add_parser("evidencia", help="filtro que toda senal debe pasar antes de proponerse")
+    ev.add_argument("--senal", default="todas", help="nombre de la senal del laboratorio, o 'todas'")
+    ev.add_argument("--horizonte", type=_entero(1, 365), default=5)
+    ev.add_argument("--registro", action="store_true", help="ver las ideas ya evaluadas")
+    ev.add_argument("--ultimas", type=_entero(1, 100_000), default=20)
+    ev.set_defaults(func=_sin_traceback(cmd_evidencia))
 
     # --- forward test -----------------------------------------------------
     f = sub.add_parser("forward", help="test prospectivo con diario sellado")
