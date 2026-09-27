@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from . import aprendizaje, cuantitativo, datos, montecarlo, series, variables, volatilidad
+from . import (aprendizaje, control, cuantitativo, datos, montecarlo, series, variables,
+               volatilidad)
 
 
 @dataclass
@@ -45,7 +46,7 @@ def _png(inf: Informe, fig, nombre: str) -> None:
 def ejecutar(simbolo: str = "BTC", temporalidad: str = "1h", desde: str = "2022-01-01",
              descargar: bool = False, acierto: float = 0.45, riesgo_beneficio: float = 2.0,
              riesgo: float = 0.01, capital: float = 10_000.0, graficos: bool = True,
-             semilla: int = 42) -> Informe:
+             semilla: int = 42, objetivo_anual: float = 0.15) -> Informe:
     velas, origen = datos.cargar_velas(simbolo, temporalidad, desde, descargar)
     diario = datos.a_diario(velas) if temporalidad != "1d" else velas
     inf = Informe(datos.par(simbolo), origen, velas, diario)
@@ -100,6 +101,13 @@ def ejecutar(simbolo: str = "BTC", temporalidad: str = "1h", desde: str = "2022-
                           "riesgo": riesgo, "capital": capital}
     _csv(inf, pd.Series({**R["mc_precio"], **R["mc_cuenta"]}, name="valor").to_frame(),
          "montecarlo")
+
+    # --- Control de volatilidad: la idea de la tesis ---------------------------
+    ctl = control.control_volatilidad(ret, objetivo_anual)
+    R["control"] = control.resumen(ctl, capital=capital)
+    R["control_tabla"] = ctl
+    _csv(inf, ctl.rename_axis("fecha"), "control_volatilidad")
+    _csv(inf, R["control"], "control_resumen")
 
     if graficos:
         _graficos(inf, v, caminos, curvas)
@@ -183,3 +191,17 @@ def _graficos(inf: Informe, v: pd.DataFrame, caminos: np.ndarray, curvas: np.nda
     a2.set_xlabel("operaciones")
     a2.legend(frameon=False)
     _png(inf, fig, "07_montecarlo")
+
+    ctl = R["control_tabla"]
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(11, 6), sharex=True, height_ratios=[3, 1])
+    for col, nombre in (("pasiva", "Comprar y mantener"),
+                        ("pasiva_igual_vol", "Comprar y mantener con la misma volatilidad (ex post)"),
+                        ("estrategia", "Control de volatilidad")):
+        a1.plot((1 + ctl[col]).cumprod(), label=nombre, linewidth=1.1)
+    a1.set_yscale("log")
+    a1.set_title("Control de volatilidad: el riesgo lo fija usted, no el mercado")
+    a1.legend(frameon=False)
+    a2.fill_between(ctl.index, ctl["exposicion"], step="pre", alpha=0.4)
+    a2.set_ylabel("expuesto")
+    a2.set_ylim(0, 1.05)
+    _png(inf, fig, "08_control")

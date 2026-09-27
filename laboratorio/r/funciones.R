@@ -11,17 +11,33 @@ suppressPackageStartupMessages({
 
 # --- Datos --------------------------------------------------------------------
 
+# Dominios de la API publica de Binance, por orden. api.binance.com responde
+# 451 desde IP de EE. UU. (donde suele correr Posit Cloud); data-api.binance.vision
+# sirve los mismos datos de mercado sin esa restriccion y sin clave.
+DOMINIOS_BINANCE <- c("https://data-api.binance.vision", "https://api.binance.com")
+
+primer_dominio_que_responde <- function() {
+  for (d in DOMINIOS_BINANCE) {
+    ok <- tryCatch({
+      jsonlite::fromJSON(paste0(d, "/api/v3/ping")); TRUE
+    }, error = function(e) FALSE)
+    if (ok) return(d)
+  }
+  stop("Binance no responde desde este equipo: use el CSV de respaldo")
+}
+
 # Descarga velas de la API publica de Binance (sin clave), 1000 por peticion.
 # Solo hace falta si no existe el CSV que exporta Python.
 descargar_binance <- function(simbolo = "BTCUSDT", intervalo = "1h",
                               desde = "2022-01-01") {
   paso_ms <- c("1h" = 3600e3, "4h" = 14400e3, "1d" = 86400e3)[[intervalo]]
   cursor <- as.numeric(as.POSIXct(desde, tz = "UTC")) * 1000
+  dominio <- primer_dominio_que_responde()
   trozos <- list()
   repeat {
     url <- sprintf(
-      "https://api.binance.com/api/v3/klines?symbol=%s&interval=%s&startTime=%.0f&limit=1000",
-      simbolo, intervalo, cursor)
+      "%s/api/v3/klines?symbol=%s&interval=%s&startTime=%.0f&limit=1000",
+      dominio, simbolo, intervalo, cursor)
     k <- jsonlite::fromJSON(url)
     if (length(k) == 0) break
     trozos[[length(trozos) + 1]] <- k

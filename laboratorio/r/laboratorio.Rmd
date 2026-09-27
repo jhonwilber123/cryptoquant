@@ -414,6 +414,64 @@ Mismo sistema, misma ventaja: arriesgando el 10% por operación la mediana
 final crece más, pero casi todas las cuentas atraviesan caídas de más del 50%.
 Con esperanza cero y fracción fija, la mediana termina perdiendo.
 
+# 9. Control de volatilidad: la idea de la tesis
+
+La dirección apenas se puede prever (secciones 5 y 7); la volatilidad sí
+(sección 6). En lugar de apostar por la dirección, se ajusta cuánto se
+invierte para que el riesgo quede cerca de un objetivo:
+$\text{exposición}_t = \min(1,\ \sigma^* / \hat\sigma_{t+1})$, con
+$\hat\sigma$ prevista por EWMA ($\lambda = 0{,}94$). La exposición decidida al
+cierre de hoy se aplica al rendimiento de mañana, y se paga un 0,15 % por
+cada unidad que cambia.
+
+```{r control}
+ewma_sigma <- function(r, lambda = 0.94, arranque = 30) {
+  v <- var(r[1:arranque]); s2 <- numeric(length(r))
+  for (i in seq_along(r)) { v <- lambda * v + (1 - lambda) * r[i]^2; s2[i] <- v }
+  s2[1:arranque] <- NA   # el arranque solo inicializa
+  sqrt(s2)
+}
+
+objetivo <- 0.15; coste <- 0.0015
+ctl <- tibble(dia = v$dia, r = v$retorno) |>
+  filter(!is.na(r)) |>
+  mutate(sigma_anual = ewma_sigma(r) * sqrt(365),
+         expo_hoy    = pmin(1, objetivo / sigma_anual),
+         expo        = lag(expo_hoy),                 # decidida ayer
+         pasiva      = exp(r) - 1,
+         estrategia  = expo * pasiva - coste * abs(expo - coalesce(lag(expo), 0))) |>
+  filter(!is.na(expo))
+frac <- sd(ctl$estrategia) / sd(ctl$pasiva)
+ctl <- ctl |> mutate(pasiva_igual_vol = frac * pasiva)
+
+resumen <- function(r) {
+  eq <- cumprod(1 + r)
+  c(rentabilidad_anual = eq[length(eq)]^(365 / length(r)) - 1,
+    volatilidad = sd(r) * sqrt(365),
+    caida_maxima = min(eq / cummax(eq) - 1),
+    capital_final = 10000 * eq[length(eq)])
+}
+sapply(ctl[c("estrategia", "pasiva", "pasiva_igual_vol")], resumen) |> t()
+```
+
+```{r control-grafico, fig.height = 5}
+ctl |>
+  transmute(dia,
+            `Control de volatilidad` = cumprod(1 + estrategia),
+            `Comprar y mantener` = cumprod(1 + pasiva),
+            `Misma volatilidad (ex post)` = cumprod(1 + pasiva_igual_vol)) |>
+  pivot_longer(-dia) |>
+  ggplot(aes(dia, value, colour = name)) + geom_line(linewidth = 0.5) +
+  scale_y_log10() +
+  labs(title = "El riesgo lo fija usted, no el mercado", x = NULL, y = "capital (escala log)",
+       colour = NULL) + theme(legend.position = "bottom")
+```
+
+La pasiva «a igual volatilidad» necesitó conocer la volatilidad de toda la
+muestra para elegir su fracción; el control llegó a ese riesgo sin conocer el
+futuro. Con un objetivo del 15 % se obtiene una volatilidad cercana, y la
+caída máxima pasa de la de bitcoin a una fracción de ella.
+
 ```{r exportar, include = FALSE}
 write_csv(v, file.path(SALIDA, "variables_diarias.csv"))
 write_csv(tabla_senales, file.path(SALIDA, "senales.csv"))

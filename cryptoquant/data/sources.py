@@ -56,11 +56,18 @@ def _cache_path(exchange: str, symbol: str, timeframe: str) -> Path:
 
 
 def _fetch_ccxt(exchange_id: str, symbol: str, timeframe: str, since_ms: int,
-                max_bars: int) -> pd.DataFrame:
-    """Descarga paginada de OHLCV. Lanza excepcion si no hay red/ccxt."""
+                max_bars: int, public_api: str | None = None) -> pd.DataFrame:
+    """Descarga paginada de OHLCV. Lanza excepcion si no hay red/ccxt.
+
+    `public_api` sustituye el dominio de los datos publicos del exchange (p. ej.
+    data-api.binance.vision). Sin el, el comportamiento es el de siempre: el
+    sistema y el forward test no lo usan.
+    """
     import ccxt  # import diferido: el pipeline offline no lo necesita
 
     ex = getattr(ccxt, exchange_id)({"enableRateLimit": True, "timeout": 20_000})
+    if public_api:
+        ex.urls["api"]["public"] = public_api
     step = _TF_MS[timeframe]
     rows: list[list] = []
     cursor = since_ms

@@ -25,5 +25,9 @@ laboratorio/r/*.html
 laboratorio/r/*_files/
 laboratorio/r/.Rproj.user/
 .ipynb_checkpoints/
+# Datos de Binance para la clase: se generan con `python -m cryptoquant paquete`
+# y se reparten por Drive y Posit Cloud, no por el repositorio.
+clase/**/datos/
+clase/**/*.csv
 investigacion/busquedas/*/openalex_*.json
 investigacion/busquedas/*/alicia_*.json

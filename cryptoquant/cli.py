@@ -9,6 +9,7 @@ Subcomandos:
     riesgo       Riesgo del modelo frente a la pasiva; backtest del VaR
     cartera      Riesgo de una cartera concreta
     evidencia    Filtro que toda senal nueva debe pasar
+    paquete      CSV de respaldo para una clase
 """
 from __future__ import annotations
 
@@ -825,7 +826,8 @@ def cmd_laboratorio(args, cfg: Config) -> int:
     _echo(f"Laboratorio: {args.simbolo} {args.temporalidad} desde {args.desde}")
     inf = informe.ejecutar(args.simbolo, args.temporalidad, args.desde, args.descargar,
                            args.acierto, args.rb, args.riesgo, args.capital,
-                           graficos=not args.no_plots, semilla=cfg.seed)
+                           graficos=not args.no_plots, semilla=cfg.seed,
+                           objetivo_anual=args.objetivo)
     R = inf.resultados
     _echo(f"  Origen: {inf.origen} | {len(inf.velas)} velas, {len(inf.diario)} dias "
           f"| {inf.diario.index[0].date()} a {inf.diario.index[-1].date()}")
@@ -903,6 +905,17 @@ def cmd_laboratorio(args, cfg: Config) -> int:
     _echo(f"    capital final mediano {mc['capital_mediano_final']:,.0f} | "
           f"prob. de perder {mc['prob_perdida']:.1%} | drawdown mediano {mc['drawdown_mediano']:.0%}")
     _echo(f"    racha perdedora mediana: {mc['racha_perdedora_mediana']:.0f} operaciones seguidas")
+    _echo()
+    ctl = R["control"]
+    _echo(f"Control de volatilidad (objetivo {args.objetivo:.0%} anual): la idea de la tesis")
+    _echo("-" * 78)
+    nombres = {"estrategia": "control de volatilidad", "pasiva": "comprar y mantener",
+               "pasiva_igual_vol": "mantener a igual vol (ex post)"}
+    for fila, f in ctl.iterrows():
+        _echo(f"  {nombres[fila]:31s} {f['rentabilidad_anual']:+6.1%} anual  vol {f['volatilidad']:5.1%}"
+              f"  caida max {f['caida_maxima']:6.1%}  capital {f['capital_final']:,.0f}")
+    _echo(f"  Exposicion media {ctl.attrs['exposicion_media']:.0%}. La referencia a igual vol necesito")
+    _echo("  conocer la volatilidad futura; el control llego a ese riesgo sin conocerla.")
     _echo()
     _echo(f"Archivos en {inf.archivos[0].parent}")
     return 0
@@ -1064,6 +1077,23 @@ def cmd_cartera(args, cfg: Config) -> int:
               f" | tamano {f['tamano_entrada']:,.2f}")
     _echo()
     _echo("Mide riesgo; no predice precios ni es una recomendacion de inversion.")
+    return 0
+
+
+def cmd_paquete(args, cfg: Config) -> int:
+    """CSV de respaldo para una clase: que ninguna clase dependa de una API."""
+    from pathlib import Path
+
+    from .laboratorio import paquete
+
+    simbolos = [s for s in args.simbolos.split(",") if s.strip()]
+    _echo(f"Descargando {', '.join(simbolos)} (1d desde {args.desde_diario}, "
+          f"1h desde {args.desde_horario})...")
+    ficha = paquete.preparar(Path(args.destino), simbolos,
+                             {"1d": args.desde_diario, "1h": args.desde_horario})
+    for f in ficha:
+        _echo(f"  {f['archivo']:22s} {f['filas']:7d} filas  {f['desde']} a {f['hasta']}  ({f['fuente']})")
+    _echo(f"Listo en {Path(args.destino).resolve()} (con LEEME.txt y huellas SHA-256).")
     return 0
 
 
@@ -1235,8 +1265,17 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--riesgo", type=_en(0, 1), default=0.01,
                      help="fraccion arriesgada por operacion")
     lab.add_argument("--capital", type=_en(0, 1e15), default=10_000.0)
+    lab.add_argument("--objetivo", type=_en(0, 5), default=0.15,
+                     help="volatilidad anual objetivo del control de volatilidad")
     lab.add_argument("--no-plots", action="store_true")
     lab.set_defaults(func=_sin_traceback(cmd_laboratorio))
+
+    pq = sub.add_parser("paquete", help="CSV de respaldo para una clase (Drive, Posit Cloud)")
+    pq.add_argument("--destino", default="clase/01_primera_clase/datos")
+    pq.add_argument("--simbolos", default="BTC,ETH,SOL")
+    pq.add_argument("--desde-diario", default="2020-01-01")
+    pq.add_argument("--desde-horario", default="2025-01-01")
+    pq.set_defaults(func=_sin_traceback(cmd_paquete))
 
     rg = sub.add_parser("riesgo", help="riesgo del modelo frente a la pasiva y backtest del VaR")
     rg.add_argument("--capital", type=_en(0, 1e15), help="para expresar el VaR en dinero")

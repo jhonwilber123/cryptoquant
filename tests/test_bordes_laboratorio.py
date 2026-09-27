@@ -103,3 +103,12 @@ def test_descarga_corta_no_pisa_el_csv_bueno(sandbox, monkeypatch):
     with pytest.raises(ValueError, match="No se ha tocado"):
         datos.cargar_velas("BTC", "1d", "2026-01-01", descargar=True)
     assert ruta.read_bytes() == antes
+
+
+def test_el_origen_dice_que_dominio_respondio(sandbox, monkeypatch):
+    # En Colab lo que importa es saber si contesto data-api o hubo que ir a los archivos.
+    bueno = _synthetic("BTC/USDT", "1d", "2020-01-01", 900, seed=1)
+    bueno.attrs["fuente"] = "data.binance.vision (archivos)"
+    monkeypatch.setattr(datos, "descargar_velas", lambda *a, **k: bueno)
+    _, origen = datos.cargar_velas("BTC", "1d", "2020-01-01", descargar=True)
+    assert origen == "data.binance.vision (archivos)"
