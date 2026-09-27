@@ -10,6 +10,7 @@ Subcomandos:
     cartera      Riesgo de una cartera concreta
     evidencia    Filtro que toda senal nueva debe pasar
     paquete      CSV de respaldo para una clase
+    piloto       Piloto de riesgo: cuanto tener en cripto con su cartera real (app)
 """
 from __future__ import annotations
 
@@ -803,6 +804,134 @@ def cmd_forward_reproduce(args, cfg: Config) -> int:
 
 
 # --------------------------------------------------------------------------
+def cmd_piloto(args, cfg: Config) -> int:
+    """Abre el piloto de riesgo en el navegador, o imprime el plan de hoy (--texto).
+
+    Solo escucha en este equipo salvo `--red`: la app muestra la cartera real.
+    Se arranca en modo headless (sin la pregunta del correo que hace Streamlit
+    la primera vez) y el navegador se abre cuando el servidor ya responde.
+    """
+    if args.texto:
+        return _piloto_texto()
+    import subprocess
+    import threading
+    from pathlib import Path
+
+    app = Path(__file__).resolve().parent / "piloto" / "app.py"
+    host = "0.0.0.0" if args.red else "127.0.0.1"
+    puerto = _puerto_libre(args.puerto, host)
+    url = f"http://127.0.0.1:{puerto}"
+    orden = [sys.executable, "-m", "streamlit", "run", str(app),
+             "--server.address", host, "--server.port", str(puerto),
+             "--server.headless", "true", "--browser.gatherUsageStats", "false",
+             "--client.toolbarMode", "minimal"]
+    if args.red:
+        _echo("AVISO: cualquiera en su red local podra abrir el piloto y ver su cartera.")
+    _echo(f"Piloto de riesgo en {url}  (Ctrl+C en esta ventana para cerrarlo)")
+    sys.stdout.flush()
+    if not args.sin_navegador:
+        threading.Thread(target=_abrir_cuando_responda, args=(url, puerto), daemon=True).start()
+    try:
+        return subprocess.call(orden)
+    except KeyboardInterrupt:
+        return 0
+
+
+def _puerto_libre(inicio: int, host: str) -> int:
+    import socket
+
+    for puerto in range(inicio, min(inicio + 50, 65536)):
+        with socket.socket() as c:  # alguien ya responde ahi?
+            c.settimeout(0.2)
+            if c.connect_ex(("127.0.0.1", puerto)) == 0:
+                continue
+        with socket.socket() as s:
+            try:
+                s.bind((host, puerto))
+            except OSError:
+                continue
+        return puerto
+    raise ValueError(f"no hay puertos libres entre {inicio} y {inicio + 49}; use --puerto")
+
+
+def _abrir_cuando_responda(url: str, puerto: int, espera: float = 60.0) -> None:
+    import socket
+    import time
+    import webbrowser
+
+    fin = time.monotonic() + espera
+    while time.monotonic() < fin:
+        with socket.socket() as c:
+            c.settimeout(0.5)
+            if c.connect_ex(("127.0.0.1", puerto)) == 0:
+                webbrowser.open(url)
+                return
+        time.sleep(0.3)
+
+
+def _piloto_texto() -> int:
+    from .piloto import diario, motor, sesion
+
+    guardada, aviso = diario.leer_cartera()
+    fotos, avisos = diario.leer_fotos()
+    for a in [aviso, *avisos]:
+        if a:
+            _echo(f"AVISO: {a}")
+    if not guardada.get("tenencias"):
+        _echo("No hay cartera guardada. Abra la app (python -m cryptoquant piloto), anote lo que")
+        _echo("tiene y pulse Guardar.")
+        return 2
+    aj = motor.Ajustes.desde(guardada.get("ajustes"))
+    reparto = (guardada.get("ajustes") or {}).get("reparto", "actual")
+    reparto = reparto if reparto in motor.REPARTOS else "actual"
+    s = sesion.calcular(guardada["tenencias"], reparto, guardada.get("mezcla"), fotos, aj)
+    p = s.plan
+    for a in s.avisos:
+        _echo(f"AVISO: {a}")
+    if s.sin_precio_ahora:
+        _echo(f"AVISO: sin precio de ahora para {', '.join(s.sin_precio_ahora)}; se usa el ultimo cierre")
+
+    _echo(f"Piloto de riesgo  (cierres hasta el {p.fecha_datos.date()} UTC, precios de ahora)")
+    _echo("-" * 78)
+    _echo(f"  Valor de la cartera   : {p.total:,.2f} USDT")
+    _echo(f"  En cripto ahora       : {p.exposicion_actual:.1%}  ({p.valor_cripto:,.2f} USDT)")
+    _echo(f"  Volatilidad prevista  : {p.sigma_prevista:.1%} anual de la mezcla "
+          f"(objetivo de la cartera {aj.objetivo:.0%})")
+    if not aj.freno:
+        freno = "desactivado"
+    elif p.factor_freno < 1:
+        freno = f"ACTIVO: caida {p.caida:.1%}, se invierte el {p.factor_freno:.0%} de lo normal"
+    else:
+        freno = f"inactivo (caida {p.caida:.1%}; empieza en -{aj.freno_inicio:.0%})"
+    _echo(f"  Freno                 : {freno}")
+    _echo(f"  Recomendado en cripto : {p.exposicion_objetivo:.1%}  ({p.cripto_objetivo:,.2f} USDT)")
+    _echo()
+    if not p.actuar:
+        _echo(f"Nada que hacer: la diferencia ({abs(p.mover):,.2f} USDT, {abs(p.mover) / p.total:.1%}) "
+              f"es menor que la banda ({aj.banda:.0%}) o que el minimo por orden "
+              f"({aj.minimo_orden:,.2f} USDT).")
+    else:
+        verbo = "pasar a estables" if p.mover < 0 else "invertir en cripto"
+        _echo(f"ACCION: {verbo} {abs(p.mover):,.2f} USDT")
+        o = p.ordenes
+        for a, fila in o[o["ejecutar"]].iterrows():
+            _echo(f"  {'Comprar' if fila['importe_orden'] > 0 else 'Vender ':7s} "
+                  f"{abs(fila['cantidad_orden']):>16.8f} {a:6s} {abs(fila['importe_orden']):>12,.2f} USDT"
+                  f"  a {_precio(fila['precio'])}")
+        if not o["ejecutar"].any():
+            _echo("  Hoy no hay ninguna orden que se pueda ejecutar.")
+        pequenas = o.index[~o["ejecutar"] & ~o["recortada"] & (o["importe"].abs() >= 0.01)]
+        if len(pequenas):
+            _echo(f"  Se omiten ordenes de menos de {aj.minimo_orden:,.2f} USDT: {', '.join(pequenas)}.")
+        if o["recortada"].any():
+            _echo("  Compras recortadas a lo que pagan su efectivo y las ventas de arriba: "
+                  f"{', '.join(o.index[o['recortada']])}.")
+    _echo()
+    _echo("Solo recomienda: las ordenes las decide y ejecuta usted. Guarde la cartera al terminar.")
+    return 0
+
+
+# --------------------------------------------------------------------------
 def cmd_dashboard(args, cfg: Config) -> int:
     """Genera el panel HTML. Solo lee: no descarga datos ni toca el diario."""
     from pathlib import Path
@@ -1245,6 +1374,15 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["hrp", "risk_parity", "min_variance", "equal"])
     r.add_argument("--capital", type=float, help="capital a asignar")
     r.set_defaults(func=cmd_recommend)
+
+    pl = sub.add_parser("piloto", help="piloto de riesgo: cuanto tener en cripto (app en el navegador)")
+    pl.add_argument("--texto", action="store_true",
+                    help="imprimir el plan de hoy en la consola, sin abrir la app")
+    pl.add_argument("--puerto", type=_entero(1024, 65535), default=8501)
+    pl.add_argument("--red", action="store_true",
+                    help="aceptar conexiones de la red local (por defecto, solo este equipo)")
+    pl.add_argument("--sin-navegador", action="store_true", help="no abrir el navegador")
+    pl.set_defaults(func=_sin_traceback(cmd_piloto))
 
     d = sub.add_parser("dashboard", help="generar el panel visual (HTML)")
     d.add_argument("--open", action="store_true", help="abrirlo en el navegador")

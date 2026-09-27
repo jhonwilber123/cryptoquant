@@ -63,6 +63,7 @@ python -m cryptoquant laboratorio          # de las velas al modelo, paso a paso
 python -m cryptoquant riesgo               # VaR del modelo y de la pasiva, y si es de fiar
 python -m cryptoquant cartera --tengo "BTC=0.05,ETH=1.2,USDT=500"
 python -m cryptoquant evidencia            # filtro para cualquier idea de ganancia
+python -m cryptoquant piloto               # su cartera real: cuánto tener en cripto (app)
 
 python -m cryptoquant forward init       # pre-registrar hipótesis (una vez)
 python -m cryptoquant forward record     # registrar la decisión de hoy (a diario)
@@ -381,11 +382,12 @@ código anterior.
 
 ## Laboratorio — [`laboratorio/`](laboratorio/README.md)
 
-El recorrido didáctico que hay debajo del sistema, en ocho pasos y en dos
+El recorrido didáctico que hay debajo del sistema, en nueve pasos y en dos
 lenguajes: velas de Binance y CSV, procesamiento con dplyr y ggplot2,
 indicadores como variables, colas gruesas y estadística de señales, series de
 tiempo y ARIMA, GARCH(1,1) aplicado al stop y al tamaño, random forest con
-línea base, y Monte Carlo del precio y de la cuenta.
+línea base, Monte Carlo del precio y de la cuenta y, como cierre, el control
+de volatilidad de la tesis.
 
 ```
 python -m cryptoquant laboratorio
@@ -461,6 +463,26 @@ print(v.pasa, v.motivos)
 
 Pasar el filtro la convierte en candidata, no en parte del sistema: cambiar la
 estrategia exige una enmienda del forward test.
+
+---
+
+## Piloto de riesgo — [`cryptoquant/piloto/`](cryptoquant/piloto/README.md)
+
+Una app para el navegador que aplica el control de volatilidad a **su cartera
+real**. Dice cuánto tener hoy en cripto para no pasar del riesgo que usted
+elige, y qué vender o comprar para llegar:
+
+- enseña qué perdería si se repitieran los peores tramos desde 2020;
+- simula la regla con su reparto de monedas;
+- lleva un diario de su cartera.
+
+```
+python -m cryptoquant piloto            # o doble clic en scripts\piloto.cmd
+python -m cryptoquant piloto --texto    # el plan de hoy en la consola
+```
+
+Solo recomienda: no usa claves de API ni envía órdenes. Solo escucha en este
+equipo, y la cartera se guarda en `data/piloto/`, fuera de git.
 
 ---
 

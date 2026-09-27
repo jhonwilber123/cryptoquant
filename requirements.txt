@@ -10,3 +10,6 @@ matplotlib>=3.8
 rich>=13.0
 tabulate>=0.9
 pyarrow>=15.0
+# Piloto de riesgo (python -m cryptoquant piloto)
+streamlit>=1.52
+requests>=2.31

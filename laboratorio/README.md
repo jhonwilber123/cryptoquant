@@ -1,7 +1,7 @@
 # Laboratorio: de las velas al modelo
 
-Ocho pasos, en Python y en R, sobre las velas horarias de BTC/USDT en Binance
-desde 2022. El resto de `cryptoquant` es un sistema en producción; esto es el
+Nueve pasos, en Python y en R, sobre las velas horarias de BTC/USDT en Binance
+desde 2022: los ocho del temario y el control de volatilidad de la tesis. El resto de `cryptoquant` es un sistema en producción; esto es el
 recorrido a la vista de cómo se construye uno, para enseñarlo y discutirlo.
 
 | Tema | Qué se hace | Python | R |
@@ -14,6 +14,7 @@ recorrido a la vista de cómo se construye uno, para enseñarlo y discutirlo.
 | Volatilidad | Agrupamiento, GARCH(1,1), pronóstico aplicado al stop y al tamaño | `volatilidad.py` | § 6 |
 | Machine learning | Random forest con prueba en el futuro, línea base e importancia de variables | `aprendizaje.py` | § 7 |
 | Monte Carlo | Trayectorias de precio; simulación de la cuenta con acierto, R:B y riesgo | `montecarlo.py` | § 8 |
+| Control de volatilidad | Invertir min(1, objetivo / volatilidad prevista) y compararlo con comprar y mantener a igual volatilidad | `control.py` | § 9 |
 
 Los módulos de Python están en [`cryptoquant/laboratorio/`](../cryptoquant/laboratorio/).
 

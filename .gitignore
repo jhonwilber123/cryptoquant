@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 data/cache/
+# Piloto de riesgo: la cartera real del usuario. Nunca al repositorio.
+data/piloto/
 reports/*.png
 reports/*.csv
 .pytest_cache/
