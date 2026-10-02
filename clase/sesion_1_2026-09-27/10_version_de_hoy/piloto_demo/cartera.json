@@ -1,0 +1,24 @@
+{
+ "tenencias": {
+  "BTC": 0.05,
+  "ETH": 1.2,
+  "SOL": 10.0,
+  "USDT": 500.0
+ },
+ "mezcla": null,
+ "ajustes": {
+  "objetivo": 0.15,
+  "max_exposicion": 1.0,
+  "banda": 0.05,
+  "freno": true,
+  "freno_inicio": 0.1,
+  "freno_tope": 0.25,
+  "freno_minimo": 0.25,
+  "freno_ventana": 180,
+  "minimo_orden": 10.0,
+  "coste": 0.0015,
+  "lam": 0.94,
+  "reparto": "actual"
+ },
+ "actualizada_utc": "2026-09-27T21:55:20+00:00"
+}

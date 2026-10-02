@@ -1,0 +1,24 @@
+Datos de respaldo para la clase
+Generados el 2026-09-27 03:13 UTC con: python -m cryptoquant paquete
+
+Velas de Binance (spot, par contra USDT). Columnas: fecha (UTC), open, high,
+low, close, volume. La vela en curso no se incluye: solo velas cerradas.
+
+Uso: subir la carpeta a Google Drive y al proyecto de Posit Cloud. En Colab,
+arrastrar el CSV al panel de archivos y leerlo con pandas.read_csv.
+
+archivo                  filas  desde       hasta       fuente
+BTCUSDT_1d.csv            2461  2020-01-01  2026-09-26  data-api.binance.vision
+BTCUSDT_1h.csv           15219  2025-01-01  2026-09-27  data-api.binance.vision
+ETHUSDT_1d.csv            2461  2020-01-01  2026-09-26  data-api.binance.vision
+ETHUSDT_1h.csv           15219  2025-01-01  2026-09-27  data-api.binance.vision
+SOLUSDT_1d.csv            2238  2020-08-11  2026-09-26  data-api.binance.vision
+SOLUSDT_1h.csv           15219  2025-01-01  2026-09-27  data-api.binance.vision
+
+Huellas SHA-256 (para comprobar que un archivo copiado esta intacto):
+f54f057bf631e5a4a84d0f895687e82e22e0a13272f85e013eb2d1301edf6ae0  BTCUSDT_1d.csv
+5d11f54d256ac3cf0ac7d33430f6d758ef4096ef2c9751ef744793eef9c5dcd1  BTCUSDT_1h.csv
+7efe795a47541a51335147d843319c0d27203d5027034e6bb9c1521696fdb7af  ETHUSDT_1d.csv
+8d06640b70e99f65bfa293afe0b8eaded2f824bda99ce172ce5da7e43638a508  ETHUSDT_1h.csv
+90e3b1662cd24112b3b0dda1fc1c263550b48be1a6a50f432c543d440ed8776b  SOLUSDT_1d.csv
+89033da1c5fbb0ce3c55a6f9e8b384ac0c73a1cdf22a0e33ab41a9c06ede38f9  SOLUSDT_1h.csv

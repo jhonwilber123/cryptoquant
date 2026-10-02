@@ -1,0 +1,415 @@
+<title>Instalar Python y R</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --bg: #F3F5F7; --surface: #FFFFFF; --ink: #131A21; --muted: #55606B; --line: #DCE1E7;
+  --accent: #2449C4; --accent-ink: #FFFFFF; --accent-soft: #E6ECFB;
+  --ok: #17784A; --ok-soft: #E3F4EA; --warn: #A6500A; --warn-soft: #FDF0E1;
+  --code-bg: #101820; --code-ink: #E4EAF0; --code-muted: #8FA0B0;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Mono", Consolas, "SF Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0D1217; --surface: #151C23; --ink: #E7ECF1; --muted: #9AA6B2; --line: #26313B;
+    --accent: #86A4FF; --accent-ink: #0D1217; --accent-soft: #1B2540;
+    --ok: #57D68D; --ok-soft: #12291D; --warn: #F5B155; --warn-soft: #2E2110;
+    --code-bg: #090E13; --code-ink: #E4EAF0; --code-muted: #7D8D9C;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0D1217; --surface: #151C23; --ink: #E7ECF1; --muted: #9AA6B2; --line: #26313B;
+  --accent: #86A4FF; --accent-ink: #0D1217; --accent-soft: #1B2540;
+  --ok: #57D68D; --ok-soft: #12291D; --warn: #F5B155; --warn-soft: #2E2110;
+  --code-bg: #090E13; --code-ink: #E4EAF0; --code-muted: #7D8D9C;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--sans); padding-inline: 16px; padding-block: 28px 64px; }
+.pagina { max-width: 780px; margin: 0 auto; display: grid; gap: 28px; }
+h1, h2, h3 { line-height: 1.2; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(1.9rem, 5vw, 2.6rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.35rem; font-weight: 600; }
+p { margin: 0; }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+kbd, code { font-family: var(--mono); font-size: 0.86em; }
+kbd { background: var(--surface); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+p code, li code, td code { background: var(--accent-soft); border-radius: 4px; padding: 1px 5px; }
+.eyebrow { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.cabecera { display: grid; gap: 14px; }
+.lead { font-size: 1.08rem; max-width: 62ch; }
+.datos { display: flex; flex-wrap: wrap; gap: 8px; }
+.dato { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 0.9rem; }
+.dato b { font-weight: 600; }
+.aviso { background: var(--ok-soft); border-radius: 10px; padding: 12px 16px; font-size: 0.97rem; }
+.barra { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 10px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.sistema { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+.sistema button { font: 600 0.95rem var(--sans); color: var(--muted); background: none; border: 0; border-radius: 7px; padding: 6px 16px; cursor: pointer; }
+.sistema button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.progreso { display: flex; align-items: center; gap: 10px; font-size: 0.92rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pista { width: 120px; height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.pista span { display: block; height: 100%; width: 0; background: var(--ok); transition: width .25s; }
+@media (prefers-reduced-motion: reduce) { .pista span { transition: none; } }
+ol.pasos { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px; counter-reset: paso; }
+.paso { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: grid; gap: 12px; counter-increment: paso; }
+.paso.hecho { border-color: var(--ok); }
+.paso-cab { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.paso-cab h2::before { content: counter(paso) "  "; color: var(--accent); font-family: var(--mono); font-weight: 600; margin-right: 6px; }
+.peso { font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.paso ol, .paso ul { margin: 0; padding-left: 1.3em; display: grid; gap: 6px; }
+.boton { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none; border-radius: 9px; padding: 9px 16px; width: fit-content; }
+.boton:hover { filter: brightness(1.08); }
+.alterno { font-size: 0.88rem; color: var(--muted); }
+.clave { background: var(--warn-soft); border-radius: 10px; padding: 10px 14px; }
+.clave b { color: var(--warn); }
+.marca { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.95rem; cursor: pointer; width: fit-content; }
+.marca input { width: 20px; height: 20px; accent-color: var(--ok); }
+.codigo { border-radius: 10px; overflow: hidden; background: var(--code-bg); }
+.codigo-cab { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; color: var(--code-muted); font: 0.8rem var(--mono); border-bottom: 1px solid #ffffff14; }
+.copiar { font: 600 0.85rem var(--sans); background: #ffffff1a; color: var(--code-ink); border: 1px solid #ffffff2e; border-radius: 7px; padding: 5px 12px; cursor: pointer; }
+.copiar.listo { background: #57D68D33; border-color: #57D68D; }
+pre { margin: 0; padding: 14px 16px; overflow-x: auto; color: var(--code-ink); font: 0.8rem/1.55 var(--mono); max-height: 360px; }
+.salida { font: 0.84rem/1.6 var(--mono); background: var(--bg); border: 1px dashed var(--line); border-radius: 10px; padding: 10px 14px; overflow-x: auto; white-space: pre; }
+.salida .v { color: var(--ok); font-weight: 600; }
+.tabla { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.94rem; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+th { font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { width: 42%; }
+.final { display: grid; gap: 10px; }
+footer { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+
+<div class="pagina">
+  <header class="cabecera">
+    <p class="eyebrow">Análisis cuantitativo y modelamiento de datos en criptoactivos · Sesión 1</p>
+    <h1>Instala Python, VS Code, R y RStudio</h1>
+    <p class="lead">Con estos cuatro programas trabajarás en tu computadora desde la sesión 2. Sigue los pasos en orden y termina con las dos pruebas: te dirán <code>[OK]</code> o qué revisar.</p>
+    <div class="datos">
+      <span class="dato"><b>30–45 min</b> con buena conexión</span>
+      <span class="dato"><b>≈ 1 GB</b> de descarga (algo más en Mac)</span>
+      <span class="dato">Antes del <b>sábado 03-10, 19:00</b></span>
+    </div>
+    <p class="aviso">Para la clase de hoy no necesitas nada instalado: trabajamos en Google Colab. Si puedes, instala antes de las 19:00; si no, después.</p>
+  </header>
+
+  <div class="barra">
+    <div class="sistema" role="group" aria-label="Sistema de tu computadora">
+      <button type="button" id="os-win" data-os="win" aria-pressed="true">Windows</button>
+      <button type="button" id="os-mac" data-os="mac" aria-pressed="false">Mac</button>
+    </div>
+    <div class="progreso"><span class="pista"><span id="pista"></span></span><span id="cuenta">0 de 6 pasos</span></div>
+  </div>
+
+  <ol class="pasos">
+    <li class="paso" id="paso-1">
+      <div class="paso-cab"><h2>Python</h2><span class="peso" data-solo="win">33 MB</span><span class="peso" data-solo="mac">79 MB</span></div>
+      <div data-solo="win">
+        <a class="boton" href="https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe" target="_blank" rel="noopener">Descargar Python 3.14 para Windows</a>
+        <p class="alterno">Si el enlace no funciona: python.org/downloads › «standalone installer». No lo instales desde la Microsoft Store.</p>
+      </div>
+      <div data-solo="mac">
+        <a class="boton" href="https://www.python.org/ftp/python/3.14.7/python-3.14.7-macos11.pkg" target="_blank" rel="noopener">Descargar Python 3.14 para Mac</a>
+        <p class="alterno">Si el enlace no funciona: python.org/downloads › «Download Python 3.14».</p>
+      </div>
+      <ol data-solo="win">
+        <li>Abre el archivo descargado.</li>
+        <li class="clave"><b>Marca la casilla «Add python.exe to PATH»</b>, abajo en la primera ventana. Es el paso que más se olvida y sin él VS Code no encuentra Python.</li>
+        <li>Pulsa <b>Install Now</b> y responde <b>Sí</b> si Windows pregunta si permites cambios.</li>
+        <li>Si al final aparece «Disable path length limit», púlsalo. Luego <b>Close</b>.</li>
+      </ol>
+      <ol data-solo="mac">
+        <li>Abre el archivo descargado y pulsa <b>Continuar</b> hasta <b>Instalar</b>. Te pedirá la contraseña de tu Mac.</li>
+        <li class="clave">Al terminar se abre una carpeta. <b>Haz doble clic en «Install Certificates.command»</b> y espera a que diga «process completed». Sin esto, Python no puede descargar datos de internet.</li>
+      </ol>
+      <label class="marca"><input type="checkbox" id="hecho-1"> Hecho</label>
+    </li>
+
+    <li class="paso" id="paso-2">
+      <div class="paso-cab"><h2>Visual Studio Code</h2><span class="peso">≈ 230 MB</span></div>
+      <div data-solo="win">
+        <a class="boton" href="https://code.visualstudio.com/sha/download?build=stable&amp;os=win32-x64-user" target="_blank" rel="noopener">Descargar VS Code para Windows</a>
+        <p class="alterno">Si el enlace no funciona: code.visualstudio.com/download › «Windows».</p>
+      </div>
+      <div data-solo="mac">
+        <a class="boton" href="https://code.visualstudio.com/download" target="_blank" rel="noopener">Ir a la descarga de VS Code</a>
+        <p class="alterno">Pulsa el botón <b>Mac</b> de esa página.</p>
+      </div>
+      <ol data-solo="win">
+        <li>Abre el archivo, acepta el acuerdo y deja marcadas las opciones que vienen por defecto. <b>Instalar</b> y luego <b>Finalizar</b>.</li>
+      </ol>
+      <ol data-solo="mac">
+        <li>Se descarga un .zip: ábrelo y <b>arrastra «Visual Studio Code» a la carpeta Aplicaciones</b>. Ábrelo desde allí y confirma <b>Abrir</b>.</li>
+      </ol>
+      <p>Dentro de VS Code instala dos extensiones. Pulsa el icono de los cuatro cuadrados a la izquierda (o <kbd data-solo="win">Ctrl+Shift+X</kbd><kbd data-solo="mac">Cmd+Shift+X</kbd>), busca cada nombre y pulsa <b>Install</b> en la de <b>Microsoft</b>:</p>
+      <ul>
+        <li><b>Python</b></li>
+        <li><b>Jupyter</b></li>
+        <li>Opcional: <b>Spanish Language Pack</b>, para tener los menús en español. VS Code pedirá reiniciarse.</li>
+      </ul>
+      <label class="marca"><input type="checkbox" id="hecho-2"> Hecho</label>
+    </li>
+
+    <li class="paso" id="paso-3">
+      <div class="paso-cab"><h2>R</h2><span class="peso">≈ 100 MB</span></div>
+      <p>R va antes que RStudio: RStudio no funciona sin R.</p>
+      <div data-solo="win">
+        <a class="boton" href="https://cran.r-project.org/bin/windows/base/release.html" target="_blank" rel="noopener">Descargar R para Windows</a>
+        <p class="alterno">Si el enlace no funciona: cran.r-project.org › «Download R for Windows» › «base».</p>
+      </div>
+      <div data-solo="mac">
+        <p>Mira qué chip tiene tu Mac en el menú Apple (la manzana) › <b>Acerca de esta Mac</b>:</p>
+        <div class="datos">
+          <a class="boton" href="https://cran.r-project.org/bin/macosx/sonoma-arm64/base/R-4.6.1-arm64.pkg" target="_blank" rel="noopener">Chip Apple (M1, M2, M3, M4…)</a>
+          <a class="boton" href="https://cran.r-project.org/bin/macosx/big-sur-x86_64/base/R-4.6.1-x86_64.pkg" target="_blank" rel="noopener">Procesador Intel</a>
+        </div>
+        <p class="alterno">La versión para chip Apple pide macOS 14 (Sonoma) o posterior. Si tu Mac es más antigua, usa la de Intel. Otras versiones: cran.r-project.org › «Download R for macOS».</p>
+      </div>
+      <ol>
+        <li>Abre el archivo descargado<span data-solo="win">, elige <b>Español</b></span> y pulsa <b data-solo="win">Siguiente</b><b data-solo="mac">Continuar</b> sin cambiar nada hasta terminar.</li>
+      </ol>
+      <label class="marca"><input type="checkbox" id="hecho-3"> Hecho</label>
+    </li>
+
+    <li class="paso" id="paso-4">
+      <div class="paso-cab"><h2>RStudio</h2><span class="peso" data-solo="win">530 MB</span><span class="peso" data-solo="mac">1,1 GB</span></div>
+      <p>Es la descarga más pesada. Si tu internet es lento, empieza por esta mientras instalas lo demás.</p>
+      <div data-solo="win">
+        <a class="boton" href="https://download1.rstudio.org/electron/windows/RStudio-2026.09.0-174.exe" target="_blank" rel="noopener">Descargar RStudio para Windows</a>
+      </div>
+      <div data-solo="mac">
+        <a class="boton" href="https://download1.rstudio.org/electron/macos/RStudio-2026.09.0-174.dmg" target="_blank" rel="noopener">Descargar RStudio para Mac</a>
+      </div>
+      <p class="alterno">Si el enlace no funciona: posit.co/download/rstudio-desktop › botón del paso 2.</p>
+      <ol>
+        <li data-solo="win">Abre el archivo y pulsa <b>Siguiente</b> sin cambiar nada. Responde <b>Sí</b> si Windows pregunta si permites cambios.</li>
+        <li data-solo="mac">Abre el archivo y <b>arrastra RStudio a la carpeta Aplicaciones</b>.</li>
+        <li>Abre RStudio. Abajo a la izquierda (la <b>consola</b>) debe aparecer «R version 4.6…». Si no aparece, R no quedó instalado: repite el paso 3.</li>
+      </ol>
+      <label class="marca"><input type="checkbox" id="hecho-4"> Hecho</label>
+    </li>
+
+    <li class="paso" id="paso-5">
+      <div class="paso-cab"><h2>Prueba de Python en VS Code</h2><span class="peso">1–3 min</span></div>
+      <ol>
+        <li>En VS Code: menú <b>Archivo › Nuevo archivo…</b> (File › New File…) y elige <b>Jupyter Notebook</b>.</li>
+        <li>Pulsa <b>Copiar</b> aquí abajo, haz clic en la celda vacía del cuaderno y pega (<kbd data-solo="win">Ctrl+V</kbd><kbd data-solo="mac">Cmd+V</kbd>).</li>
+        <li>Pulsa ▶ a la izquierda de la celda (o <kbd>Shift+Enter</kbd>).</li>
+        <li>Arriba se abre «Seleccionar kernel» (Select Kernel): elige <b>Entornos de Python</b> (Python Environments) y luego <b>Python 3.14</b>.</li>
+        <li>Si pregunta si quieres instalar <code>ipykernel</code>, pulsa <b>Instalar</b>. La primera vez tarda unos minutos.</li>
+      </ol>
+      <div class="codigo">
+        <div class="codigo-cab"><span>prueba de Python · para VS Code</span><button class="copiar" type="button" data-copia="codigo-py">Copiar</button></div>
+        <pre id="codigo-py"># Prueba de la instalación: Python y VS Code.
+# Pega todo en una celda de un cuaderno de VS Code y ejecútala. La primera vez tarda unos minutos.
+import glob, importlib, os, platform, shutil, subprocess, sys
+
+PAQUETES = {"pandas": "pandas", "numpy": "numpy", "matplotlib": "matplotlib", "scipy": "scipy",
+            "scikit-learn": "sklearn", "statsmodels": "statsmodels", "requests": "requests"}
+print("Instalando los paquetes del curso (la primera vez tarda unos minutos)...")
+subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *PAQUETES])
+
+fallos = []
+
+
+def ok(texto):
+    print("[OK]", texto)
+
+
+def revisar(texto):
+    fallos.append(texto)
+    print("[REVISAR]", texto)
+
+
+def buscar(*rutas):
+    for ruta in rutas:
+        hallados = glob.glob(os.path.expanduser(os.path.expandvars(ruta)))
+        if hallados:
+            return hallados[0]
+
+
+if sys.version_info &gt;= (3, 10):
+    ok(f"Python {platform.python_version()} en {platform.system().replace('Darwin', 'macOS')}")
+else:
+    revisar(f"Python {platform.python_version()} es muy antiguo: instala el de python.org (paso 1).")
+if "google.colab" in sys.modules:
+    revisar("Esto es Google Colab. La prueba se hace en VS Code, en tu computadora.")
+
+for nombre, modulo in PAQUETES.items():
+    try:
+        ok(f"{nombre} {importlib.import_module(modulo).__version__}")
+    except Exception:
+        revisar(f"No se pudo instalar {nombre}. Copia el error de arriba y pégaselo a Claude.")
+
+try:
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import requests
+    velas = requests.get("https://data-api.binance.vision/api/v3/klines",
+                         params={"symbol": "BTCUSDT", "interval": "1d", "limit": 90}, timeout=20).json()
+    cierre = pd.Series([float(v[4]) for v in velas], index=pd.to_datetime([v[0] for v in velas], unit="ms"))
+    ok(f"Internet: último cierre de BTC en Binance, {cierre.iloc[-1]:,.2f} USDT")
+    cierre.plot(title="BTC, últimos 90 días (Python)", figsize=(8, 3))
+    plt.show()
+except Exception as e:
+    revisar(f"No se pudo descargar de Binance ({type(e).__name__}). ¿Hay internet? ¿Lo bloquea un antivirus?")
+
+r = shutil.which("Rscript") or buscar(r"C:\Program Files\R\R-*\bin\Rscript.exe",
+                                      r"%LOCALAPPDATA%\Programs\R\R-*\bin\Rscript.exe",
+                                      "/Library/Frameworks/R.framework/Resources/bin/Rscript")
+rstudio = buscar(r"C:\Program Files\RStudio\rstudio.exe", r"%LOCALAPPDATA%\Programs\RStudio\rstudio.exe",
+                 "/Applications/RStudio.app", "~/Applications/RStudio.app")
+if r:
+    ok("R instalado")
+else:
+    revisar("No encuentro R. Instálalo (paso 3) antes que RStudio.")
+if rstudio:
+    ok("RStudio instalado")
+else:
+    revisar("No encuentro RStudio (paso 4).")
+
+print()
+if fallos:
+    print(f"Faltan {len(fallos)} cosas: mira los [REVISAR] y la tabla «Si algo falla» de la guía.")
+else:
+    print("TODO LISTO. Escribe en el chat de la clase:  Python y VS Code OK")</pre>
+      </div>
+      <p>Debe terminar así, con un gráfico de BTC en medio:</p>
+      <div class="salida"><span class="v">[OK]</span> Python 3.14.7 en …
+<span class="v">[OK]</span> pandas …   (y así con cada paquete)
+<span class="v">[OK]</span> Internet: último cierre de BTC en Binance, … USDT
+<span class="v">[OK]</span> R instalado
+<span class="v">[OK]</span> RStudio instalado
+
+TODO LISTO. Escribe en el chat de la clase:  Python y VS Code OK</div>
+      <label class="marca"><input type="checkbox" id="hecho-5"> Hecho</label>
+    </li>
+
+    <li class="paso" id="paso-6">
+      <div class="paso-cab"><h2>Prueba de R en RStudio</h2><span class="peso">1–2 min</span></div>
+      <ol>
+        <li>En RStudio, haz clic en la <b>consola</b> (abajo a la izquierda).</li>
+        <li>Pulsa <b>Copiar</b> aquí abajo, pega en la consola y pulsa <kbd>Enter</kbd>.</li>
+        <li>Si pregunta «Would you like to use a personal library instead?» y luego «…create a personal library…?», responde <b>Yes</b> las dos veces.</li>
+      </ol>
+      <div class="codigo">
+        <div class="codigo-cab"><span>prueba de R · para la consola de RStudio</span><button class="copiar" type="button" data-copia="codigo-r">Copiar</button></div>
+        <pre id="codigo-r"># Prueba de la instalación: R y RStudio.
+# Pega todo en la consola de RStudio (abajo a la izquierda) y pulsa Enter.
+paquetes &lt;- c("dplyr", "readr", "ggplot2", "jsonlite")
+faltan &lt;- paquetes[!vapply(paquetes, requireNamespace, logical(1), quietly = TRUE)]
+if (length(faltan) &gt; 0) install.packages(faltan)
+fallos &lt;- 0
+for (p in paquetes) {
+  if (requireNamespace(p, quietly = TRUE)) {
+    cat("[OK]", p, format(packageVersion(p)), "\n")
+  } else {
+    cat("[REVISAR] No se pudo instalar", p, "\n")
+    fallos &lt;- fallos + 1
+  }
+}
+cat("[OK]", R.version.string, "\n")
+velas &lt;- tryCatch(
+  jsonlite::fromJSON("https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&amp;interval=1d&amp;limit=90"),
+  error = function(e) NULL)
+if (is.null(velas)) {
+  cat("[REVISAR] No se pudo descargar de Binance. ¿Hay internet? ¿Lo bloquea un antivirus?\n")
+  fallos &lt;- fallos + 1
+} else {
+  cierre &lt;- as.numeric(velas[, 5])
+  cat("[OK] Internet: último cierre de BTC en Binance,", format(tail(cierre, 1), big.mark = ","), "USDT\n")
+  plot(cierre, type = "l", main = "BTC, últimos 90 días (R)", xlab = "día", ylab = "USDT")
+}
+if (fallos == 0) cat("\nTODO LISTO. Escribe en el chat de la clase:  R y RStudio OK\n")</pre>
+      </div>
+      <p>Debe terminar así, con un gráfico en el panel <b>Plots</b> (abajo a la derecha):</p>
+      <div class="salida"><span class="v">[OK]</span> dplyr …   (y así con cada paquete)
+<span class="v">[OK]</span> R version 4.6.1 …
+<span class="v">[OK]</span> Internet: último cierre de BTC en Binance, … USDT
+
+TODO LISTO. Escribe en el chat de la clase:  R y RStudio OK</div>
+      <label class="marca"><input type="checkbox" id="hecho-6"> Hecho</label>
+    </li>
+  </ol>
+
+  <section class="final">
+    <h2>Si algo falla</h2>
+    <div class="tabla">
+      <table>
+        <thead><tr><th>Lo que ves</th><th>Qué hacer</th></tr></thead>
+        <tbody>
+          <tr data-solo="win"><td>VS Code no muestra Python 3.14 al elegir el kernel</td><td>Faltó la casilla «Add python.exe to PATH». Desinstala Python (Configuración › Aplicaciones), vuelve al paso 1 marcándola y reinicia VS Code.</td></tr>
+          <tr><td>No aparece «Seleccionar kernel» o «Jupyter Notebook»</td><td>Faltan las extensiones <b>Python</b> y <b>Jupyter</b> (paso 2). Instálalas y reinicia VS Code.</td></tr>
+          <tr data-solo="mac"><td><code>CERTIFICATE_VERIFY_FAILED</code> o «SSL» en la prueba de Python</td><td>Abre Aplicaciones › Python 3.14 y haz doble clic en «Install Certificates.command». Vuelve a ejecutar la celda.</td></tr>
+          <tr data-solo="mac"><td>«No se puede abrir porque es de un desarrollador no identificado»</td><td>Ajustes del Sistema › Privacidad y seguridad › <b>Abrir igualmente</b>.</td></tr>
+          <tr data-solo="win"><td>Windows pide contraseña de administrador y no la tienes (PC del trabajo)</td><td>Usa tu computadora personal. Si no puedes, no pasa nada: seguirás en Colab y Posit Cloud.</td></tr>
+          <tr><td>RStudio dice que no encuentra R</td><td>Instala R (paso 3) y vuelve a abrir RStudio.</td></tr>
+          <tr><td><code>[REVISAR]</code> de Binance</td><td>Comprueba tu internet. Algunos antivirus o redes de trabajo lo bloquean: prueba desde otra red.</td></tr>
+          <tr><td>Cualquier otro error</td><td>Copia el error entero y pégaselo a Claude: «Me salió este error instalando [programa] en [Windows/Mac]: …». Si sigue, tráelo a la sesión 2: empezamos resolviendo instalaciones.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>¿Tienes Chromebook o tablet, o no puedes instalar? No te preocupes: el curso también funciona en Google Colab y Posit Cloud.</p>
+  </section>
+
+  <footer>Módulo «Análisis cuantitativo y modelamiento de datos en criptoactivos con Python y RStudio» · Sesión 1, 27-09-2026. Versiones de septiembre de 2026: Python 3.14.7, R 4.6.1, RStudio 2026.09.</footer>
+</div>
+
+<script>
+(function () {
+  var guardar = function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} };
+  var leer = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
+
+  function ponerSistema(os) {
+    document.querySelectorAll("[data-solo]").forEach(function (el) { el.hidden = el.dataset.solo !== os; });
+    document.querySelectorAll(".sistema button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.os === os)); });
+    guardar("instalar-os", os);
+  }
+  var inicial = leer("instalar-os") || (/Mac|iPhone|iPad/.test(navigator.userAgent) ? "mac" : "win");
+  ponerSistema(inicial);
+  document.querySelectorAll(".sistema button").forEach(function (b) {
+    b.addEventListener("click", function () { ponerSistema(b.dataset.os); });
+  });
+
+  var casillas = Array.prototype.slice.call(document.querySelectorAll(".marca input"));
+  function contar() {
+    var n = casillas.filter(function (c) { return c.checked; }).length;
+    document.getElementById("cuenta").textContent = n + " de " + casillas.length + " pasos";
+    document.getElementById("pista").style.width = (100 * n / casillas.length) + "%";
+  }
+  casillas.forEach(function (c) {
+    c.checked = leer("instalar-" + c.id) === "1";
+    c.closest(".paso").classList.toggle("hecho", c.checked);
+    c.addEventListener("change", function () {
+      guardar("instalar-" + c.id, c.checked ? "1" : "0");
+      c.closest(".paso").classList.toggle("hecho", c.checked);
+      contar();
+    });
+  });
+  contar();
+
+  document.querySelectorAll(".copiar").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var pre = document.getElementById(b.dataset.copia);
+      var hecho = function () {
+        b.textContent = "Copiado"; b.classList.add("listo");
+        setTimeout(function () { b.textContent = "Copiar"; b.classList.remove("listo"); }, 2000);
+      };
+      var seleccionar = function () {
+        var r = document.createRange(); r.selectNodeContents(pre);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        b.textContent = "Pulsa Ctrl+C";
+      };
+      try {
+        navigator.clipboard.writeText(pre.textContent).then(hecho, seleccionar);
+      } catch (e) { seleccionar(); }
+    });
+  });
+})();
+</script>
