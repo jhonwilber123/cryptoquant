@@ -1,0 +1,249 @@
+---
+title: "Unidad 6 · Modelamiento de volatilidad"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Qué es la volatilidad, cómo se mide y cómo se anualiza.
+- Por qué la volatilidad viene **en rachas** y cómo se contrasta (prueba ARCH).
+- Ajustar e interpretar modelos **ARCH** y **GARCH** con `rugarch`: persistencia, vida media, volatilidad
+  de largo plazo.
+- Comparar el GARCH con la **EWMA**, el modelo de una línea que usa el piloto, también fuera de la muestra.
+
+**Qué tiene que ver con la app.** Es el corazón del piloto: su **volatilidad prevista** es una EWMA con
+λ = 0,94, un caso particular del GARCH, y con ella decide cuánto tener en cripto:
+$\min(1,\ \text{objetivo} / \text{volatilidad prevista})$. Al final reproduces la cifra exacta del piloto.
+
+```{r comun}
+source("comun.R")
+library(rugarch)
+
+precios <- cierres()
+btc <- precios |> transmute(fecha, r = log(BTC) - log(lag(BTC))) |> drop_na()
+r <- btc$r
+r_pct <- r * 100                                   # los GARCH se estiman mejor en %
+cat(length(r), "rendimientos diarios de BTC\n")
+```
+
+## 1. Qué es la volatilidad
+
+La **volatilidad** es la desviación típica de los rendimientos. Se expresa **anual**: la diaria por
+$\sqrt{365}$. Un índice de acciones amplio se mueve un 15-20 % al año: el perfil **Prudente** del piloto
+(15 %) es que tu cartera entera se mueva como la bolsa.
+
+```{r concepto}
+cat(sprintf("Volatilidad de BTC: diaria %.2f%% | anual %.1f%%\n", 100 * sd(r), 100 * sd(r) * sqrt(ANUAL)))
+btc$vol_30 <- zoo::rollapplyr(r, 30, sd, fill = NA) * sqrt(ANUAL)
+ggplot(btc, aes(fecha, vol_30)) +
+  geom_line(colour = COLORES[["BTC"]]) +
+  geom_hline(yintercept = 0.15, linetype = 2) +
+  labs(title = "Volatilidad anual de BTC en ventanas de 30 días (línea: objetivo «Prudente», 15 %)", x = NULL, y = NULL)
+btc |> group_by(año = year(fecha)) |> summarise(volatilidad = round(sd(r) * sqrt(ANUAL), 2))
+```
+
+La volatilidad de BTC cambia mucho: del 20 % en meses tranquilos a más del 100 % en las crisis.
+
+## 2. La volatilidad viene en rachas
+
+La **prueba ARCH-LM** de Engle regresa $r_t^2$ sobre sus 5 valores anteriores: si el R² es significativo
+($n \cdot R^2$ frente a una $\chi^2_5$), la varianza de hoy depende de la de días pasados. `embed()` arma la
+tabla de rezagos.
+
+```{r arch-lm}
+ggplot(btc, aes(fecha, abs(r))) + geom_line(linewidth = 0.3, colour = "#555555") +
+  labs(title = "Tamaño del movimiento diario |r|: rachas de calma y de agitación", x = NULL, y = NULL)
+e2 <- (r - mean(r))^2
+X <- embed(e2, 6)                                  # columna 1: hoy; 2 a 6: los 5 días anteriores
+lm_arch <- lm(X[, 1] ~ X[, -1])
+estad <- nrow(X) * summary(lm_arch)$r.squared
+cat(sprintf("Prueba ARCH-LM con 5 rezagos: estadístico %.1f, p-valor %.1e\n", estad, pchisq(estad, 5, lower.tail = FALSE)))
+```
+
+## 3. ARCH(1)
+
+$$r_t = \mu + \varepsilon_t,\qquad \varepsilon_t = \sigma_t z_t,\qquad \sigma^2_t = \omega + \alpha\,\varepsilon^2_{t-1}$$
+
+En `rugarch`, un modelo se describe con `ugarchspec()` y se estima con `ugarchfit()`. El AIC se calcula
+como $-2\ln L + 2k$, igual que en Python (`infocriteria()` de rugarch lo da dividido entre *n*).
+
+**Un ajuste no está bien solo porque no da error.** Con su optimizador por defecto (`solnp`), rugarch se
+queda atascado en este modelo en una solución absurda: μ = 10 % **diario** y α = 0,999, con una
+log-verosimilitud de −12 592. Con `solver = "nlminb"` llega a la buena (−6 327, la misma que Python).
+Compruébalo cambiando el `solver`: mira siempre si los coeficientes tienen sentido.
+
+```{r arch1}
+espec <- function(orden = c(1, 1), dist = "norm") {
+  ugarchspec(variance.model = list(model = "sGARCH", garchOrder = orden),
+             mean.model = list(armaOrder = c(0, 0), include.mean = TRUE),
+             distribution.model = dist)
+}
+aic <- function(fit) -2 * likelihood(fit) + 2 * length(coef(fit))
+m_arch <- ugarchfit(espec(c(1, 0)), data = r_pct, solver = "nlminb")
+round(coef(m_arch), 4)
+cat(sprintf("Log-verosimilitud %.1f | AIC %.1f\n", likelihood(m_arch), aic(m_arch)))
+```
+
+## 4. GARCH(1,1)
+
+$$\sigma^2_t = \omega + \alpha\,\varepsilon^2_{t-1} + \beta\,\sigma^2_{t-1}$$
+
+| Cifra | Fórmula | Qué dice |
+|---|---|---|
+| **persistencia** | $\alpha + \beta$ | cuánto de la varianza de hoy pasa a mañana |
+| **vida media** | $\ln 0{,}5 / \ln(\alpha+\beta)$ | días que tarda un sobresalto en perder la mitad de su efecto |
+| **volatilidad de largo plazo** | $\sqrt{\omega / (1-\alpha-\beta)}$ | hacia dónde vuelve la volatilidad |
+
+Además del error **normal** se prueba uno **t de Student** (`"std"` en rugarch), cuyo parámetro ν
+(`shape`) mide el grosor de las colas.
+
+```{r garch}
+resumen_garch <- function(fit, nombre) {
+  k <- coef(fit)
+  pers <- k[["alpha1"]] + k[["beta1"]]
+  integrado <- pers > 0.995                      # persistencia 1 o casi: no hay nivel al que volver
+  tibble(modelo = nombre, alpha = k[["alpha1"]], beta = k[["beta1"]], persistencia = pers,
+         vida_media = if (integrado) NA else log(0.5) / log(pers),
+         vol_largo_plazo = if (integrado) NA else sqrt(k[["omega"]] / (1 - pers)) / 100 * sqrt(ANUAL),
+         nu = if ("shape" %in% names(k)) k[["shape"]] else NA, AIC = aic(fit))
+}
+g_normal <- ugarchfit(espec(dist = "norm"), data = r_pct, solver = "hybrid")
+g_t <- ugarchfit(espec(dist = "std"), data = r_pct, solver = "hybrid")
+bind_rows(resumen_garch(g_normal, "normal"), resumen_garch(g_t, "t de Student")) |>
+  mutate(across(-modelo, ~ round(.x, 3))) |>
+  as.data.frame()
+```
+
+**Cómo se lee:**
+
+- El GARCH mejora muchísimo el AIC del ARCH(1), y la versión con **t** mejora mucho a la normal: colas
+  gruesas (ν ≈ 3).
+- Con errores **normales**, persistencia 0,98: un sobresalto pierde la mitad de su efecto en unos 40
+  días, y la volatilidad tiende a volver a un 86 % anual.
+- Con errores **t**, la persistencia queda en 0,999, pegada al límite de 1 (en Python, 1). Con
+  persistencia 1 o casi no hay nivel de largo plazo ni vida media que tengan sentido (salen `NA`): cada
+  sobresalto deja huella casi para siempre. Ese caso límite, con ω ≈ 0, es la
+  **EWMA** de la sección 6, la del piloto.
+
+(Los coeficientes no coinciden al decimal con los de Python: `arch` y `rugarch` arrancan la recursión de
+la varianza de forma distinta y usan optimizadores distintos. Las conclusiones son las mismas.)
+
+## 5. La volatilidad que ve el modelo, y su pronóstico
+
+```{r condicional}
+btc$sigma_t <- as.numeric(sigma(g_t)) / 100 * sqrt(ANUAL)
+ggplot(btc, aes(fecha)) +
+  geom_line(aes(y = abs(r) * sqrt(ANUAL)), colour = "grey80", linewidth = 0.3) +
+  geom_line(aes(y = sigma_t), colour = COLORES[["BTC"]]) +
+  coord_cartesian(ylim = c(0, 2.5)) +
+  labs(title = "BTC: volatilidad condicional del GARCH-t (gris: |r| anualizado)", x = NULL, y = NULL)
+
+camino <- as.numeric(sigma(ugarchforecast(g_normal, n.ahead = 90))) / 100 * sqrt(ANUAL)
+cat(sprintf("GARCH normal: mañana %.1f%% | 30 días %.1f%% | 90 días %.1f%% | largo plazo %.1f%%\n",
+            100 * camino[1], 100 * camino[30], 100 * camino[90],
+            100 * resumen_garch(g_normal, "")$vol_largo_plazo))
+```
+
+## 6. EWMA: el GARCH de una línea que usa el piloto
+
+La **EWMA** de RiskMetrics es un GARCH con $\omega = 0$, $\alpha = 1-\lambda$ y $\beta = \lambda$:
+$\sigma^2_t = \lambda\,\sigma^2_{t-1} + (1-\lambda)\,r^2_{t-1}$, con λ = 0,94. No hay que estimar nada.
+
+Se compara **fuera de la muestra**: GARCH-t estimado hasta 2024, con los parámetros fijos (`setfixed`) y
+filtrado (`ugarchfilter`) en 2025-2026. Cada día, cada modelo pronostica la varianza del día siguiente con
+lo que se sabía al cierre. Errores frente al rendimiento al cuadrado (menor es mejor): **MSE** y
+**QLIKE** ($\ln\hat\sigma^2 + r^2/\hat\sigma^2$, que castiga sobre todo quedarse corto).
+
+```{r comparacion}
+ewma_varianza <- function(x, lam = 0.94, arranque = 30) {
+  v <- mean((x[1:arranque] - mean(x[1:arranque]))^2)   # varianza con n, como np.var
+  salida <- numeric(length(x))
+  for (i in seq_along(x)) {
+    v <- lam * v + (1 - lam) * x[i]^2
+    salida[i] <- v                                      # pronóstico para i + 1, con datos hasta i
+  }
+  salida[1:arranque] <- NA
+  salida
+}
+
+en_prueba <- btc$fecha >= as.Date("2025-01-01")
+fit_e <- ugarchfit(espec(dist = "std"), data = r_pct[!en_prueba], solver = "hybrid")
+espec_fija <- espec(dist = "std")
+setfixed(espec_fija) <- as.list(coef(fit_e))
+filtro <- ugarchfilter(espec_fija, data = r_pct)
+
+pron <- tibble(
+  `GARCH-t` = as.numeric(sigma(filtro))^2,                      # σ²_t, con datos hasta t-1
+  `EWMA 0,94` = c(NA, head(ewma_varianza(r_pct), -1)),          # la de ayer pronostica hoy
+  `30 días` = c(NA, head(zoo::rollapplyr(r_pct, 30, var, fill = NA), -1)),
+  constante = var(r_pct[!en_prueba])
+)
+real2 <- r_pct^2
+t(sapply(pron, function(f) c(MSE = mean((real2 - f)[en_prueba]^2),
+                             QLIKE = mean((log(f) + real2 / f)[en_prueba])))) |> round(3)
+```
+
+La EWMA queda a la par o por delante del GARCH, y los dos mejoran claramente a una volatilidad
+constante. La ventana de 30 días reacciona tarde. Por eso el piloto usa la EWMA.
+
+## 7. Caso aplicado: la volatilidad de BTC, ETH y SOL
+
+```{r tres}
+bind_rows(lapply(ACTIVOS, function(a) {
+  ra <- 100 * diff(log(na.omit(precios[[a]])))
+  g <- ugarchfit(espec(dist = "std"), data = ra, solver = "hybrid")
+  resumen_garch(g, a) |>
+    mutate(vol_prevista_manana = as.numeric(sigma(ugarchforecast(g, n.ahead = 1))) / 100 * sqrt(ANUAL),
+           vol_ewma_hoy = sqrt(tail(ewma_varianza(ra), 1)) / 100 * sqrt(ANUAL))
+})) |> select(-AIC) |> mutate(across(-modelo, ~ round(.x, 3))) |> as.data.frame()
+```
+
+SOL es la más volátil hoy y BTC la menos; las colas son gruesas en las tres; la persistencia, muy alta.
+
+## 8. Así lo usa el piloto
+
+Con la cartera de ejemplo (0,05 BTC, 1,2 ETH, 10 SOL y 500 USDT) y los cierres del 26-09-2026:
+
+1. El **reparto** de la parte cripto según lo que vale cada moneda hoy.
+2. El **rendimiento de esa mezcla** cada día (rendimientos log de los días comunes).
+3. La **EWMA** con λ = 0,94, anualizada.
+4. En cripto, $\min(1,\ 15\,\% / \sigma)$ del total.
+
+```{r piloto}
+unidades <- c(BTC = 0.05, ETH = 1.2, SOL = 10)
+usdt <- 500
+comunes <- drop_na(precios)
+valor <- unidades * unlist(tail(comunes, 1)[ACTIVOS])
+mezcla <- valor / sum(valor)
+lr <- apply(log(as.matrix(comunes[ACTIVOS])), 2, diff)
+sigma_mezcla <- sqrt(tail(ewma_varianza(as.vector(lr %*% mezcla)), 1) * ANUAL)
+total <- sum(valor) + usdt
+parte <- min(1, 0.15 / sigma_mezcla)
+round(mezcla, 3)
+cat(sprintf("Volatilidad prevista de la mezcla: %.2f%%\n", 100 * sigma_mezcla))
+cat(sprintf("Recomendación: %.1f%% en cripto (%s USDT de %s); hoy tiene el %.1f%%\n", 100 * parte,
+            format(round(parte * total), big.mark = ","), format(round(total), big.mark = ","), 100 * sum(valor) / total))
+cat(sprintf("Pasar unos %s USDT de cripto a USDT\n", format(round(sum(valor) - parte * total), big.mark = ",")))
+```
+
+Son las cifras del piloto en **Hoy** para esta cartera con esos cierres, y las mismas que en Python:
+volatilidad prevista del 48,7 % y menos de un tercio en cripto para que **toda** la cartera se mueva un
+15 % al año.
+
+## Ejercicios
+
+1. **GJR-GARCH.** `ugarchspec(variance.model = list(model = "gjrGARCH"))` deja que las caídas suban la
+   volatilidad más que las subidas. ¿Es positivo `gamma1`? ¿Mejora el AIC?
+2. **λ.** Repite la comparación fuera de la muestra con λ = 0,97 y λ = 0,90.
+3. **Otro objetivo.** ¿Qué parte en cripto recomendaría el perfil **Moderado** (25 %)? ¿Y el
+   **Decidido** (40 %)?
+4. **Tu cartera.** ¿Qué cartera de tres monedas tiene la menor volatilidad prevista?

@@ -1,0 +1,242 @@
+---
+title: "Unidad 8 · Simulación de Monte Carlo y modelamiento avanzado"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Qué es una simulación de **Monte Carlo** y por qué funciona.
+- Un modelo **estocástico** clásico, el movimiento browniano geométrico, y sus límites.
+- Generar **escenarios de mercado** de cuatro formas y **comparar** lo que dice cada una del riesgo.
+- Simular una **cartera** de varias monedas a la vez y una **cuenta de trading**.
+
+**Qué tiene que ver con la app.** En **Tiempos duros**, el piloto dice qué probabilidad tienes de caer más
+de un 10 % o un 20 % durante el próximo mes, con 10 000 simulaciones que remuestrean **bloques de días
+reales**. Aquí construyes esa simulación.
+
+R y Python usan generadores de azar distintos: con la misma semilla salen sorteos distintos, y las cifras
+de este cuaderno difieren de las de Python en el segundo decimal. Las del piloto son las de Python.
+
+```{r comun}
+source("comun.R")
+precios <- cierres()
+r <- diff(log(na.omit(precios$BTC)))               # rendimientos log diarios de BTC
+mu <- mean(r); sigma <- sd(r)
+cat(sprintf("BTC: media diaria %.4f%%, desviación diaria %.2f%% (%d días)\n", 100 * mu, 100 * sigma, length(r)))
+set.seed(42)                                       # semilla: resultados repetibles
+```
+
+## 1. La idea: muchos futuros posibles
+
+Si tenemos un modelo de **cómo** se generan los rendimientos, sorteamos miles de futuros y contamos en
+cuántos pasa algo. La proporción se acerca a la probabilidad verdadera; el error baja como $1/\sqrt{n}$.
+¿Probabilidad de que BTC caiga más de un 20 % en 30 días, con rendimientos normales?
+
+```{r grandes-numeros}
+for (n in c(100, 1000, 10000, 100000)) {
+  caida <- exp(rowSums(matrix(rnorm(n * 30, mu, sigma), n))) - 1
+  p <- mean(caida < -0.20)
+  cat(sprintf("%7d simulaciones: %.2f%%  (± %.2f%%)\n", n, 100 * p, 100 * 1.96 * sqrt(p * (1 - p) / n)))
+}
+```
+
+## 2. Un modelo estocástico: el movimiento browniano geométrico
+
+$$\ln S_{t+1} = \ln S_t + \mu + \sigma\,Z_t,\qquad Z_t \sim N(0, 1)$$
+
+10 000 trayectorias de BTC a un año desde el último cierre. `apply(..., 1, cumsum)` acumula cada fila.
+
+```{r gbm}
+S0 <- tail(na.omit(precios$BTC), 1)
+dias <- 365
+lr <- matrix(rnorm(10000 * dias, mu, sigma), 10000)
+caminos <- S0 * exp(t(apply(lr, 1, cumsum)))
+banda <- apply(caminos, 2, quantile, probs = c(0.05, 0.25, 0.5, 0.75, 0.95))
+tibble(dia = 1:dias, p5 = banda[1, ], p25 = banda[2, ], p50 = banda[3, ], p75 = banda[4, ], p95 = banda[5, ]) |>
+  ggplot(aes(dia)) +
+  geom_ribbon(aes(ymin = p5, ymax = p95), fill = COLORES[["BTC"]], alpha = 0.2) +
+  geom_ribbon(aes(ymin = p25, ymax = p75), fill = COLORES[["BTC"]], alpha = 0.4) +
+  geom_line(aes(y = p50)) +
+  scale_y_log10() +
+  labs(title = "BTC a un año: 10 000 trayectorias del modelo normal (bandas del 50 % y del 90 %)", x = "días", y = NULL)
+final <- caminos[, dias] / S0 - 1
+cat(sprintf("Dentro de un año: mediana %+.0f%%, 5 %% peor %+.0f%%, 5 %% mejor %+.0f%%; P(perder) %.0f%%\n",
+            100 * median(final), 100 * quantile(final, 0.05), 100 * quantile(final, 0.95), 100 * mean(final < 0)))
+```
+
+El modelo supone rendimientos **normales** e **independientes**. En cripto no se cumple ninguna de las dos
+cosas: colas gruesas (Unidad 3) y volatilidad en rachas (Unidad 6).
+
+## 3. Cuatro formas de generar escenarios
+
+| Método | Cómo sortea cada día | Qué conserva | Qué pierde |
+|---|---|---|---|
+| **normal** | $N(\mu, \sigma)$ históricas | media y varianza | colas gruesas y rachas |
+| **normal con la volatilidad de hoy** | $N(\mu, \sigma_{EWMA})$ | el momento actual | colas gruesas y rachas |
+| **bootstrap** | un día real al azar | las colas | las rachas |
+| **bootstrap por bloques** | trozos de 10 días reales seguidos | colas y rachas | — |
+
+```{r escenarios}
+bloques <- function(n_hist, dias, n, bloque) {
+  n_bloques <- ceiling(dias / bloque)
+  inicios <- matrix(sample.int(n_hist - bloque + 1, n * n_bloques, replace = TRUE) - 1, n)
+  idx <- matrix(0L, n, n_bloques * bloque)
+  for (b in seq_len(n_bloques)) {
+    for (k in seq_len(bloque)) idx[, (b - 1) * bloque + k] <- inicios[, b] + k
+  }
+  idx[, 1:dias, drop = FALSE]                      # índices de días históricos (empiezan en 1)
+}
+ewma_sigma <- function(x, lam = 0.94, arranque = 30) {
+  v <- mean((x[1:arranque] - mean(x[1:arranque]))^2)
+  for (xi in x) v <- lam * v + (1 - lam) * xi^2
+  sqrt(v)
+}
+n <- 10000; dias <- 30
+escenarios <- list(
+  normal = matrix(rnorm(n * dias, mu, sigma), n),
+  `normal, volatilidad de hoy` = matrix(rnorm(n * dias, mu, ewma_sigma(r)), n),
+  bootstrap = matrix(r[sample.int(length(r), n * dias, replace = TRUE)], n),
+  `bootstrap por bloques` = matrix(r[bloques(length(r), dias, n, 10)], n)
+)
+medir <- function(lr) {
+  camino <- cbind(1, exp(t(apply(lr, 1, cumsum))))
+  final <- camino[, ncol(camino)] - 1
+  caida <- apply(camino, 1, function(x) min(x / cummax(x) - 1))
+  q5 <- unname(quantile(final, 0.05))
+  c(VaR_95 = -q5, CVaR = -mean(final[final <= q5]),
+    P_caer_10 = mean(caida <= -0.10), P_caer_20 = mean(caida <= -0.20),
+    dias_menos10_por_1000 = 1000 * mean(lr < log(0.9)))
+}
+cat(sprintf("En la historia real: %.2f días de −10 %% o peor por cada 1000\n", 1000 * mean(r < log(0.9))))
+round(t(sapply(escenarios, medir)), 3)
+```
+
+- La **normal** casi no produce días de −10 % (menos de 1 por cada 1000, frente a 5,3 reales). A 30 días
+  la diferencia se diluye, pero sigue en la **CVaR**: cuando el mes sale mal, la normal promete perder
+  menos que los días reales.
+- Los **bootstrap** reproducen la frecuencia real de días malos.
+- **Por bloques** sale algo menos de riesgo que con días sueltos: copia también los rebotes y las rachas
+  de calma. Lo importante es que no inventa una independencia que no existe.
+- La **normal con la volatilidad de hoy** da mucho menos riesgo: hoy la EWMA (45 %) está por debajo de la
+  media histórica (61 %). Es el único método que sabe en qué momento estamos.
+
+## 4. Una cartera: simular todas las monedas a la vez
+
+Cada sorteo toma **el mismo día** para las tres monedas, y así conserva su correlación. Con la cartera de
+ejemplo (0,05 BTC, 1,2 ETH, 10 SOL y 500 USDT), como el piloto: rendimientos **simples** de los días
+comunes, 10 000 caminos de 21 días, bloques de 10 días; las unidades no cambian durante el mes.
+
+```{r cartera}
+unidades <- c(BTC = 0.05, ETH = 1.2, SOL = 10)
+usdt <- 500
+comunes <- drop_na(precios)
+P <- as.matrix(comunes[ACTIVOS])
+R <- P[-1, ] / P[-nrow(P), ] - 1                    # rendimientos simples, mismos días para las tres
+
+proximo_mes <- function(valores, efectivo, dias = 21, n = 10000, bloque = 10) {
+  total <- sum(valores) + efectivo
+  idx <- bloques(nrow(R), dias, n, bloque)
+  caminos <- matrix(efectivo, n, dias)
+  for (a in names(valores)) {
+    crec <- matrix(1 + R[idx, a], n)                 # rendimientos sorteados de esa moneda
+    caminos <- caminos + valores[[a]] * t(apply(crec, 1, cumprod))
+  }
+  cbind(1, caminos / total)
+}
+resumen <- function(caminos) {
+  final <- caminos[, ncol(caminos)] - 1
+  caida <- apply(caminos, 1, function(x) min(x / cummax(x) - 1))
+  c(rentabilidad_mediana = median(final), perdida_5_peor = -unname(quantile(final, 0.05)),
+    P_caer_10 = mean(caida <= -0.10), P_caer_20 = mean(caida <= -0.20))
+}
+
+valor_hoy <- unidades * P[nrow(P), ]
+total <- sum(valor_hoy) + usdt
+mezcla <- valor_hoy / sum(valor_hoy)
+sigma_mezcla <- ewma_sigma(as.vector(diff(log(P)) %*% mezcla)) * sqrt(ANUAL)
+parte <- min(1, 0.15 / sigma_mezcla)
+cat(sprintf("Volatilidad prevista %.1f%% -> en cripto el %.1f%% del total\n", 100 * sigma_mezcla, 100 * parte))
+valor_plan <- mezcla * parte * total
+efectivo_plan <- total - sum(valor_plan)
+round(cbind(con_lo_que_tiene_hoy = resumen(proximo_mes(valor_hoy, usdt)),
+            siguiendo_la_recomendacion = resumen(proximo_mes(valor_plan, efectivo_plan))), 3)
+```
+
+Con lo que tiene hoy, en torno a la mitad de los escenarios cae más de un 10 % en algún momento del mes;
+siguiendo la recomendación, un 4 % o menos. Las cifras exactas del piloto son las del cuaderno de Python
+(mismo generador de azar).
+
+**"Un mal día (1 de cada 20)"** no es Monte Carlo: es una **simulación histórica**, el percentil 5 de los
+rendimientos reales de la cartera en los últimos 730 días. Este sí coincide al decimal con el piloto:
+
+```{r mal-dia}
+x <- tail(R, 730) %*% (valor_hoy / total)
+q5 <- quantile(x, 0.05, type = 7)
+cat(sprintf("Un mal día: perder %.2f%% (%.0f USDT). Si se pasa, de media %.2f%%\n",
+            -100 * q5, -q5 * total, -100 * mean(x[x <= q5])))
+```
+
+## 5. Caso aplicado: trayectorias de la cartera a tres meses
+
+```{r trayectorias}
+bandas <- function(valores, efectivo, nombre) {
+  c <- proximo_mes(valores, efectivo, dias = 90) * total
+  q <- apply(c, 2, quantile, probs = c(0.05, 0.5, 0.95))
+  tibble(dia = 0:90, p5 = q[1, ], p50 = q[2, ], p95 = q[3, ], cartera = nombre)
+}
+bind_rows(bandas(valor_hoy, usdt, "con lo que tiene hoy"),
+          bandas(valor_plan, efectivo_plan, "siguiendo la recomendación")) |>
+  ggplot(aes(dia, colour = cartera, fill = cartera)) +
+  geom_ribbon(aes(ymin = p5, ymax = p95), alpha = 0.2, colour = NA) +
+  geom_line(aes(y = p50)) +
+  geom_hline(yintercept = total, linewidth = 0.3) +
+  scale_colour_manual(values = c("#c0392b", "#2c7fb8")) + scale_fill_manual(values = c("#c0392b", "#2c7fb8")) +
+  labs(title = "La cartera de ejemplo a 90 días (USDT): 90 % central y mediana", x = "días", y = NULL, colour = NULL, fill = NULL)
+```
+
+El piloto no promete ganar más: estrecha el abanico, por abajo y por arriba.
+
+## 6. Otra trayectoria: la de una cuenta de trading
+
+Un sistema que acierta el **45 %** y gana el doble de lo que arriesga (R:B 1:2) tiene esperanza positiva,
+$0{,}45 \times 2 - 0{,}55 = +0{,}35$ veces lo arriesgado. ¿Qué pasa en 200 operaciones según el riesgo por
+operación?
+
+```{r cuenta}
+cuenta <- function(riesgo, n = 10000, operaciones = 200, acierto = 0.45, rb = 2) {
+  gana <- matrix(runif(n * operaciones) < acierto, n)
+  capital <- cbind(1, t(apply(ifelse(gana, 1 + riesgo * rb, 1 - riesgo), 1, cumprod)))
+  caida <- apply(capital, 1, function(x) min(x / cummax(x) - 1))
+  c(capital_final_mediano = median(capital[, operaciones + 1]), P_perder = mean(capital[, operaciones + 1] < 1),
+    caida_maxima_mediana = median(caida), P_caer_mas_50 = mean(caida <= -0.5))
+}
+round(t(sapply(c(`1 %` = 0.01, `2 %` = 0.02, `5 %` = 0.05, `10 %` = 0.10), cuenta)), 3)
+```
+
+Con la misma ventaja, arriesgar el 10 % da una mediana final enorme, pero casi todas las cuentas caen más
+de la mitad por el camino. **Cuánto** expones importa más que acertar la dirección: la idea del piloto.
+
+## 7. Así lo usa el piloto
+
+| Pantalla del piloto | Método | Aquí |
+|---|---|---|
+| Próximo mes: P(caer más del 10 % / 20 %) | bootstrap por bloques de 10 días, 10 000 caminos de 21 días | sección 4 |
+| Un mal día (1 de cada 20) | simulación histórica, percentil 5 de los últimos 730 días | sección 4 |
+| Si se repitiera lo peor | los peores tramos reales de 1, 7, 30, 90 y 365 días | Unidad 9 |
+| 4 métodos de VaR (botón) | histórico, normal, t de Student y GARCH-t | Unidades 6 y 8 |
+
+## Ejercicios
+
+1. **El tamaño del bloque.** Repite la sección 4 con bloques de 1, 5, 20 y 60 días.
+2. **La semilla.** Cambia `set.seed(42)`. ¿Cuánto varía la probabilidad de caer más de un 10 %?
+3. **Otra cartera.** Solo BTC frente a solo SOL, con el mismo dinero.
+4. **Kelly.** Con acierto del 45 % y R:B 1:2, $f^* = 0{,}45 - 0{,}55/2 = 17{,}5\,\%$. Simula ese riesgo.

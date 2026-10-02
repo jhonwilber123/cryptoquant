@@ -1,0 +1,252 @@
+---
+title: "Unidad 2 · Entorno de trabajo y procesamiento de datos en R"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Pasar de datos "crudos" a una tabla lista para analizar con `dplyr`: elegir, filtrar, ordenar y crear
+  columnas.
+- Agrupar y resumir: por moneda, por año, por día de la semana.
+- Cambiar entre formato **largo** y **ancho** con `tidyr`, unir tablas y decidir qué hacer con los
+  datos que faltan.
+- Dejar preparado el conjunto de datos que usan los modelos de las unidades siguientes.
+
+El cuaderno de Python de esta unidad hace **lo mismo con pandas**. Compáralos lado a lado:
+
+| Tarea | R (`dplyr`, `tidyr`) | Python (`pandas`) |
+|---|---|---|
+| leer un CSV | `read_csv()` | `pd.read_csv()` |
+| elegir columnas | `select()` | `df[["a", "b"]]` |
+| filtrar filas | `filter()` | `df[condición]` |
+| ordenar | `arrange()` | `df.sort_values()` |
+| crear una columna | `mutate()` | `df.assign()` |
+| agrupar y resumir | `group_by() + summarise()` | `df.groupby().agg()` |
+| ancho ↔ largo | `pivot_wider()` / `pivot_longer()` | `df.pivot()` / `df.melt()` |
+| unir tablas | `inner_join()` / `full_join()` | `pd.merge()` / `df.join()` |
+| el valor de ayer | `lag()` | `df.shift()` |
+
+**Qué tiene que ver con la app.** La pantalla **Mi diario** del piloto valora tu cartera día a día: une
+lo que tienes con los precios de cada día. Al final de este cuaderno la construyes tú.
+
+## 0. El entorno en RStudio
+
+- Trabaja siempre dentro de un **proyecto** (`cuadernos.Rproj`): R usa su carpeta como directorio de
+  trabajo, así `read_csv("BTCUSDT_1d.csv")` encuentra el archivo sin rutas largas.
+- `source("comun.R")` carga los paquetes y las funciones de la Unidad 1 (`velas()`, `cierres()`) con el
+  mismo periodo de estudio que Python: del 01-01-2020 al 26-09-2026.
+- El operador `|>` ("y luego") encadena pasos: `datos |> filter(...) |> arrange(...)` se lee de
+  izquierda a derecha.
+
+```{r comun}
+source("comun.R")
+```
+
+## 1. Importar y juntar en formato largo
+
+Para trabajar con las tres monedas a la vez se apilan en **formato largo**: una fila por día y moneda,
+con una columna que dice de qué moneda es cada fila. Es el formato natural de `dplyr` y `ggplot2`.
+
+```{r largo}
+largo <- bind_rows(lapply(ACTIVOS, function(a) mutate(velas(a), moneda = a))) |>
+  select(fecha, moneda, open, high, low, close, volume)
+glimpse(largo)
+```
+
+## 2. Crear columnas: el rendimiento diario, y un error que hay que ver una vez
+
+El rendimiento simple de un día es `cierre de hoy / cierre de ayer − 1`, o sea `close / lag(close) - 1`.
+
+En formato largo, la fila anterior a la primera de SOL es la **última de ETH**. Sin `group_by`, el primer
+"rendimiento" de SOL compara el precio de SOL con el de ETH:
+
+```{r error}
+mal  <- largo |> mutate(ret = close / lag(close) - 1)
+bien <- largo |> group_by(moneda) |> mutate(ret = close / lag(close) - 1) |> ungroup()
+primera_sol <- which(largo$moneda == "SOL")[1]
+cat(sprintf("Primer día de SOL, sin agrupar: %.2f%%\n", 100 * mal$ret[primera_sol]))
+cat("Primer día de SOL, por moneda:", bien$ret[primera_sol], "\n")
+largo <- bien
+```
+
+El primero es un desplome del 99 % que nunca existió: SOL valía unos 3 dólares y ETH, unos 380. El
+segundo es `NA`, lo correcto: el primer día no tiene día anterior. **Siempre `group_by` antes de
+`lag`** cuando hay varias series en una tabla.
+
+## 3. Filtrar y ordenar: los peores días
+
+¿Qué días cayó alguna moneda más de un 25 %? Hay fechas que conviene reconocer: el 12-03-2020 (el
+pánico del COVID), el 19-05-2021 (China contra la minería y el comercio de criptos) y el 09-11-2022 (la
+quiebra de FTX, con SOL en el centro).
+
+```{r peores}
+largo |>
+  filter(ret < -0.25) |>
+  arrange(ret) |>
+  transmute(fecha, moneda, close, ret = sprintf("%.1f%%", 100 * ret))
+```
+
+## 4. Agrupar y resumir: cada moneda, cada año
+
+`group_by()` parte la tabla en grupos y `summarise()` resume cada uno:
+
+- **rentabilidad** del año: se encadenan los rendimientos diarios, `prod(1 + r) − 1`;
+- **volatilidad anual**: la desviación típica diaria por la raíz de 365 (Unidad 6);
+- **peor día** y porcentaje de días en que subió.
+
+`na.rm = TRUE` ignora el primer día de cada moneda, que no tiene rendimiento.
+
+```{r anual}
+anual <- largo |>
+  mutate(año = year(fecha)) |>
+  group_by(moneda, año) |>
+  summarise(rentabilidad = prod(1 + ret, na.rm = TRUE) - 1,
+            volatilidad  = sd(ret, na.rm = TRUE) * sqrt(ANUAL),
+            peor_dia     = min(ret, na.rm = TRUE),
+            dias_sube    = mean(ret > 0, na.rm = TRUE), .groups = "drop")
+anual |> mutate(across(rentabilidad:dias_sube, ~ sprintf("%.0f%%", 100 * .x))) |> print(n = 21)
+```
+
+Lo que dice la tabla:
+
+- La **volatilidad** anual va del 42 % (BTC en 2025) a más del 150 % (SOL en 2020 y 2021). Un índice de
+  acciones suele moverse entre un 15 y un 20 % al año.
+- La **rentabilidad** va de más del 10 000 % (SOL en 2021) a −94 % (SOL en 2022).
+- Los **días de subida** rondan el 50 % todos los años: ganar o perder un año no depende de subir más
+  días, sino de cuánto se sube o se baja en unos pocos.
+
+### Por día de la semana
+
+Las criptos cotizan también el fin de semana. ¿Se nota? Se agrupa por día de la semana el volumen en
+dólares y el tamaño del movimiento (valor absoluto del rendimiento), y cada moneda se divide por su media.
+`wday(..., week_start = 1)` numera los días empezando en lunes.
+
+```{r semana}
+nombres <- c("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+semana <- largo |>
+  mutate(dia = factor(nombres[wday(fecha, week_start = 1)], levels = nombres),
+         volumen_usd = volume * close) |>
+  group_by(moneda, dia) |>
+  summarise(volumen = mean(volumen_usd), movimiento = mean(abs(ret), na.rm = TRUE)) |>
+  group_by(moneda) |>
+  mutate(volumen = volumen / mean(volumen), movimiento = movimiento / mean(movimiento)) |>
+  ungroup()
+semana |>
+  pivot_wider(names_from = moneda, values_from = c(volumen, movimiento)) |>
+  mutate(across(-dia, ~ round(.x, 2)))
+```
+
+El sábado y el domingo se negocia entre un 20 y un 35 % menos que la media, y los precios se mueven
+menos. Esa regularidad semanal reaparece en la Unidad 5 como **estacionalidad**.
+
+```{r semana-grafico, fig.height = 3}
+ggplot(semana, aes(dia, volumen, fill = moneda)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 1, linetype = 2) +
+  scale_fill_manual(values = COLORES) +
+  labs(title = "Volumen por día de la semana (1 = la media de cada moneda)", x = NULL, y = NULL)
+```
+
+## 5. De largo a ancho, y unir tablas
+
+Para comparar monedas día a día conviene el formato **ancho**: una fila por día, una columna por
+moneda. `pivot_wider()` pasa de largo a ancho; `pivot_longer()`, al revés.
+
+```{r ancho}
+ancho <- largo |> select(fecha, moneda, close) |> pivot_wider(names_from = moneda, values_from = close)
+dim(ancho)
+head(ancho, 3)
+```
+
+**Unir** por la fecha: `inner_join` deja solo los días que están en las dos tablas; `full_join`, todos.
+
+```{r joins}
+btc <- velas("BTC") |> select(fecha, BTC = close)
+sol <- velas("SOL") |> select(fecha, SOL = close)
+cat("inner:", nrow(inner_join(btc, sol, by = "fecha")), "días | full:",
+    nrow(full_join(btc, sol, by = "fecha")), "días\n")
+```
+
+## 6. Los datos que faltan
+
+Antes de agosto de 2020 SOL no existía. Qué hacer con esos huecos depende de la pregunta:
+
+| Estrategia | Cuándo | Ejemplo en el piloto |
+|---|---|---|
+| **quitar** las filas (`drop_na`) | cuando hacen falta todas las monedas a la vez | la volatilidad de la mezcla usa solo los días comunes |
+| **rellenar con el último precio** (`fill(.direction = "down")`) | para valorar algo que tienes si un día falta el precio | "Tiempos duros" rellena días sueltos sin vela |
+| rellenar con el **siguiente** (`"up"`) | **nunca** en series de precios | usaría un precio del futuro |
+
+```{r faltan}
+colSums(is.na(ancho))
+comunes <- drop_na(ancho)
+cat("Días comunes a las tres:", nrow(comunes), "desde", format(min(comunes$fecha)), "\n")
+```
+
+## 7. Caso aplicado: datos listos para la econometría
+
+Los modelos de las unidades 4 a 7 trabajan con **rendimientos logarítmicos** diarios en los días comunes
+y sin huecos. Se guardan en un CSV, el mismo que guarda el cuaderno de Python.
+
+```{r retornos}
+retornos <- comunes |>
+  mutate(across(all_of(ACTIVOS), ~ log(.x) - log(lag(.x)))) |>
+  drop_na()
+cat(nrow(retornos), "días | huecos:", sum(is.na(retornos)), "\n")
+write_csv(retornos, "retornos_diarios.csv")
+summary(retornos[ACTIVOS])
+```
+
+## 8. Así lo usa el piloto: tu cartera, día a día
+
+La cartera de ejemplo del manual del piloto es **0,05 BTC, 1,2 ETH, 10 SOL y 500 USDT**. Cada moneda vale
+`unidades × cierre`; los USDT valen lo que dicen. Es una columna nueva y una suma por fila. El piloto lo
+hace en **Mi diario**, con un cuidado más: si compras o vendes, cambian las unidades desde ese día, y los
+ingresos no cuentan como ganancias (Unidad 9).
+
+```{r cartera}
+cartera <- c(BTC = 0.05, ETH = 1.2, SOL = 10)
+usdt <- 500
+valor <- comunes |>
+  mutate(BTC = BTC * cartera["BTC"], ETH = ETH * cartera["ETH"], SOL = SOL * cartera["SOL"],
+         total = BTC + ETH + SOL + usdt)
+
+ggplot(valor, aes(fecha, total)) +
+  geom_line(colour = "#333333") +
+  labs(title = "La cartera de ejemplo, valorada cada día (USDT)", x = NULL, y = NULL)
+
+hoy <- tail(valor, 1)
+cat(sprintf("Valor el %s: %s USDT\n", format(hoy$fecha, "%d-%m-%Y"), format(round(hoy$total), big.mark = ",")))
+round(c(BTC = hoy$BTC, ETH = hoy$ETH, SOL = hoy$SOL, USDT = usdt) / hoy$total, 3)
+```
+
+Y la **caída desde el máximo** de los últimos 180 días, la que vigila el *freno* del piloto.
+`zoo::rollapplyr` aplica `max` a cada ventana de 180 días que termina ese día: solo mira días pasados.
+
+```{r caida}
+maximo_180 <- zoo::rollapplyr(valor$total, 180, max, partial = TRUE)
+valor$caida <- valor$total / maximo_180 - 1
+peor <- valor[which.min(valor$caida), ]
+cat(sprintf("Caída vigente: %.1f%% | peor caída en el periodo: %.1f%% (%s)\n",
+            100 * tail(valor$caida, 1), 100 * peor$caida, format(peor$fecha, "%d-%m-%Y")))
+```
+
+## Ejercicios
+
+1. **Tu cartera.** Cambia las unidades de `cartera` y repite la sección 8. ¿Qué parte del valor está en
+   cada moneda hoy?
+2. **Por mes.** Repite la tabla de la sección 4 agrupando por `floor_date(fecha, "month")`. ¿Cuál fue el
+   peor mes de BTC?
+3. **Domingos.** ¿El rendimiento medio del domingo es distinto del de los demás días? Calcula la media y
+   su error típico (`sd / sqrt(n)`) por día de la semana.
+4. **Python y R.** Abre en R el `retornos_diarios.csv` que guardó el cuaderno de Python y compáralo con
+   el de R: `all.equal()` debería decir `TRUE`.

@@ -1,0 +1,253 @@
+---
+title: "Unidad 5 · Modelos de series de tiempo"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Qué es una serie **estacionaria** y por qué se modelan los rendimientos y no los precios.
+- Leer la **autocorrelación** (ACF y PACF) para identificar un modelo.
+- Ajustar modelos **AR**, **MA**, **ARIMA** y **SARIMA** con `arima()`, elegir entre ellos con el AIC y el
+  BIC, y revisar sus residuos.
+- Evaluar un pronóstico **fuera de la muestra** y proyectar un criptoactivo con su incertidumbre.
+
+**Qué tiene que ver con la app.** El piloto **no pronostica el precio**. Este cuaderno muestra por qué:
+los rendimientos diarios de BTC son casi ruido, y ni el mejor ARIMA pronostica mejor que decir "mañana,
+cero". El tamaño de los movimientos, en cambio, sí tiene memoria: la puerta a la Unidad 6.
+
+```{r comun}
+source("comun.R")
+library(forecast)       # ggAcf(), ggPacf(), auto.arima()
+library(tseries)        # adf.test()
+
+btc <- velas("BTC")
+lp <- log(btc$close)                        # log del precio, un dato por día
+r <- diff(lp)                               # rendimientos diarios
+fechas_r <- btc$fecha[-1]
+cat(length(r), "rendimientos diarios de BTC, del", format(min(fechas_r)), "al", format(max(fechas_r)), "\n")
+```
+
+## 1. Estacionariedad: precios frente a rendimientos
+
+Una serie es **estacionaria** si su media y su varianza no cambian con el tiempo. El precio no lo es; el
+rendimiento diario oscila alrededor de cero.
+
+```{r estacionariedad, fig.height = 5}
+bind_rows(tibble(fecha = btc$fecha, valor = lp, serie = "Log del precio: no estacionario"),
+          tibble(fecha = fechas_r, valor = r, serie = "Rendimiento diario: estacionario en media")) |>
+  ggplot(aes(fecha, valor)) +
+  geom_line(linewidth = 0.3) +
+  facet_wrap(~ serie, ncol = 1, scales = "free_y") +
+  labs(x = NULL, y = NULL)
+```
+
+La prueba de **Dickey-Fuller aumentada** (`adf.test`) tiene como hipótesis nula una **raíz unitaria**
+(no estacionaria): un p-valor pequeño la rechaza. Por defecto usa constante, tendencia y
+`trunc((n-1)^(1/3))` rezagos; el cuaderno de Python usa lo mismo y da el mismo estadístico. El p-valor
+de `adf.test` se interpola en una tabla que no baja de 0,01: por eso sale "0,01" donde Python dice 0,000.
+
+```{r adf}
+adf.test(lp)
+adf.test(r)
+```
+
+El precio no rechaza la raíz unitaria; el rendimiento la rechaza con claridad. Se modela el rendimiento,
+o, lo que es lo mismo, el log del precio **diferenciado una vez**: la "I" de ARIMA es *d* = 1.
+
+## 2. ¿Tienen memoria los rendimientos? ACF y PACF
+
+- **ACF**: correlación del rendimiento de hoy con el de hace 1, 2, ... días.
+- **PACF**: la misma, descontando los días intermedios.
+
+Un **AR(p)** deja la PACF cortada tras *p* rezagos; un **MA(q)**, la ACF cortada tras *q*. Miremos
+también los rendimientos **al cuadrado**, que miden el tamaño del movimiento.
+
+```{r acf, fig.height = 3}
+ggAcf(r, lag.max = 30) + labs(title = "ACF del rendimiento") + ylim(-0.15, 0.3)
+ggPacf(r, lag.max = 30) + labs(title = "PACF del rendimiento") + ylim(-0.15, 0.3)
+ggAcf(r^2, lag.max = 30) + labs(title = "ACF del rendimiento al cuadrado") + ylim(-0.15, 0.3)
+Box.test(r, lag = 10, type = "Ljung-Box")
+Box.test(r^2, lag = 10, type = "Ljung-Box")
+```
+
+Con toda la muestra, Ljung-Box **rechaza** que los rendimientos sean ruido: el primer rezago es negativo,
+una ligera tendencia a revertir lo de ayer. Pero mira de dónde sale:
+
+```{r por-periodo}
+for (desde in c("2020-01-01", "2020-04-01", "2021-01-01", "2022-01-01")) {
+  x <- r[fechas_r >= as.Date(desde)]
+  cat(sprintf("desde %s: rendimiento p = %.3f | al cuadrado p = %.1e\n", desde,
+              Box.test(x, 10, "Ljung-Box")$p.value,
+              pchisq(Box.test(x^2, 10, "Ljung-Box")$statistic, 10, lower.tail = FALSE)))
+}
+```
+
+Basta empezar en abril de 2020 para que deje de ser significativa: la crean unos pocos días de marzo de
+2020 (−39,5 % el 12 y +16 % el 13). Los rendimientos **al cuadrado** tienen memoria en todos los
+periodos: la dirección es casi impredecible; el tamaño del movimiento, no.
+
+## 3. Modelos AR, MA y ARMA
+
+| Modelo | Ecuación | Idea |
+|---|---|---|
+| AR(1) | $r_t = \mu + \phi\,(r_{t-1} - \mu) + \varepsilon_t$ | hoy se parece a ayer |
+| MA(1) | $r_t = \mu + \varepsilon_t + \theta\,\varepsilon_{t-1}$ | el sobresalto de ayer pesa hoy |
+| ARMA(1,1) | las dos cosas | |
+
+`arima(r, order = c(p, 0, q))` ajusta un ARMA(p, q) y estima la media (`intercept`).
+
+```{r arma}
+for (o in list(c(1, 0, 0), c(0, 0, 1), c(1, 0, 1))) {
+  m <- arima(r, order = o)
+  cat(sprintf("ARIMA(%s): %s  AIC = %.1f\n", paste(o, collapse = ","),
+              paste(names(coef(m)), round(coef(m), 4), sep = " = ", collapse = ", "), AIC(m)))
+}
+ar1 <- arima(r, order = c(1, 0, 0))
+ar1
+```
+
+El coeficiente AR(1) es pequeño y negativo (−0,07) y, con toda la muestra, significativo: está a más de
+tres errores típicos de cero. Explica un 0,5 % de la varianza (φ² ≈ 0,005), y depende de marzo de 2020.
+
+Python da el mismo coeficiente con un error típico menor (0,013 frente a 0,020): cada programa lo calcula
+de una forma distinta, y con colas gruesas no coinciden.
+
+## 4. Identificación: elegir *p* y *q* con el AIC y el BIC
+
+Los **criterios de información** premian el ajuste y castigan los parámetros; menor es mejor. El **BIC**
+castiga más, así que elige modelos más simples. `forecast::auto.arima()` hace esta búsqueda sola; aquí
+se hace a mano para ver la tabla completa.
+
+```{r identificacion}
+criterios <- expand.grid(p = 0:2, q = 0:2) |>
+  rowwise() |>
+  mutate(m = list(arima(r, order = c(p, 0, q))), AIC = AIC(m), BIC = BIC(m)) |>
+  ungroup() |>
+  transmute(modelo = sprintf("ARIMA(%d,1,%d)", p, q), AIC = AIC - min(AIC), BIC = BIC - min(BIC)) |>
+  arrange(modelo)
+criterios |> mutate(across(c(AIC, BIC), ~ round(.x, 1)))
+```
+
+La tabla da la distancia al mejor; menos de 2 puntos no distinguen modelos. El BIC prefiere
+ARIMA(1,1,0), el AR(1) de antes; el AIC, ARIMA(1,1,1), cuyos coeficientes AR y MA casi se cancelan
+(síntoma de ajustar el ruido). El **paseo aleatorio**, ARIMA(0,1,0), queda a 5 puntos de BIC.
+
+## 5. Evaluar el modelo
+
+```{r residuos}
+Box.test(resid(ar1), lag = 10, type = "Ljung-Box")
+```
+
+**Fuera de la muestra**: se estima hasta el 26-09-2025 y se pronostica, día a día, el año siguiente sin
+volver a estimar. Tres pronósticos del rendimiento de mañana: 0 (**paseo aleatorio**), la **media** de
+entrenamiento y el **AR(1)**, $\hat\mu + \hat\phi\,(r_{t-1} - \hat\mu)$.
+
+```{r fuera}
+corte <- as.Date("2025-09-26")
+en_entreno <- fechas_r <= corte
+fit <- arima(r[en_entreno], order = c(1, 0, 0))
+mu <- coef(fit)[["intercept"]]; phi <- coef(fit)[["ar1"]]
+prueba <- r[!en_entreno]
+ayer <- r[which(!en_entreno) - 1]
+pronosticos <- list(`paseo aleatorio` = rep(0, length(prueba)),
+                    media = rep(mean(r[en_entreno]), length(prueba)),
+                    `AR(1)` = mu + phi * (ayer - mu))
+t(sapply(names(pronosticos), function(n) {
+  f <- pronosticos[[n]]
+  c(RMSE = sqrt(mean((prueba - f)^2)),
+    acierta_direccion = if (n == "paseo aleatorio") NA else mean(sign(f) == sign(prueba)))
+})) |> round(5)
+```
+
+Fuera de la muestra, el AR(1), que era "significativo", pronostica **peor** que el paseo aleatorio y que
+la media, y acierta la dirección la mitad de las veces. **Significativo no es lo mismo que útil.**
+
+## 6. SARIMA: cuando hay estacionalidad
+
+Un **SARIMA**$(p,d,q)(P,D,Q)_s$ añade términos que miran *s* períodos atrás; con datos diarios, *s* = 7 es
+un ciclo **semanal**. El **volumen** lo tiene (Unidad 2). Se compara ARIMA(1,1,1) con
+SARIMA(1,1,1)(1,0,1)₇ sobre el log del volumen en dólares, ajustados hasta el 30-06-2026, pronosticando los
+88 días siguientes. `method = "ML"` evita un fallo de `arima()` cuando el término estacional está muy
+cerca de 1.
+
+```{r sarima}
+vol <- log(btc$volume * btc$close)
+en_e <- btc$fecha <= as.Date("2026-06-30")
+v_e <- vol[en_e]; v_p <- vol[!en_e]
+sin_estacion <- arima(v_e, order = c(1, 1, 1), method = "ML")
+con_estacion <- arima(v_e, order = c(1, 1, 1), seasonal = list(order = c(1, 0, 1), period = 7), method = "ML")
+f_sin <- predict(sin_estacion, n.ahead = length(v_p))$pred
+f_con <- predict(con_estacion, n.ahead = length(v_p))$pred
+cat(sprintf("ARIMA(1,1,1)           AIC = %8.1f   RMSE de los 88 días = %.3f\n", AIC(sin_estacion), sqrt(mean((v_p - f_sin)^2))))
+cat(sprintf("SARIMA(1,1,1)(1,0,1)7  AIC = %8.1f   RMSE de los 88 días = %.3f\n", AIC(con_estacion), sqrt(mean((v_p - f_con)^2))))
+round(coef(con_estacion), 3)
+
+tibble(fecha = btc$fecha[!en_e], real = v_p, ARIMA = as.numeric(f_sin), `SARIMA semanal` = as.numeric(f_con)) |>
+  pivot_longer(-fecha) |>
+  ggplot(aes(fecha, value, colour = name)) +
+  geom_line() +
+  scale_colour_manual(values = c(real = "grey60", ARIMA = "#1f77b4", `SARIMA semanal` = "#ff7f0e")) +
+  labs(title = "Log del volumen diario de BTC: pronóstico desde el 30-06-2026", x = NULL, y = NULL, colour = NULL)
+```
+
+El SARIMA tiene un AIC mucho menor y su pronóstico **dibuja la semana**; el ARIMA, una línea casi plana.
+(Los coeficientes no coinciden al decimal con los de Python: cada paquete maximiza la verosimilitud con
+su propio algoritmo, y con un término estacional tan cerca de 1 la superficie es muy plana.)
+
+## 7. Caso aplicado: proyectar BTC 90 días
+
+ARIMA(0,1,0) con deriva proyecta el log del precio como
+$\widehat{\ln P}_{T+h} = \ln P_T + h\,\hat\mu$, con un intervalo de $\pm 1{,}96\,\hat\sigma\sqrt{h}$.
+Desde el 28-06-2026 hasta el 26-09-2026, frente a lo que pasó:
+
+```{r proyeccion}
+origen <- as.Date("2026-06-28")
+historia <- r[fechas_r <= origen]
+mu_h <- mean(historia); sd_h <- sd(historia)
+h <- 1:90
+proy <- tibble(fecha = origen + h,
+               centro = lp[btc$fecha == origen] + h * mu_h,
+               banda = 1.96 * sd_h * sqrt(h)) |>
+  left_join(transmute(btc, fecha, real = close), by = "fecha")
+
+ggplot() +
+  geom_line(data = filter(btc, fecha >= as.Date("2026-03-01"), fecha <= origen), aes(fecha, close), colour = COLORES[["BTC"]]) +
+  geom_ribbon(data = proy, aes(fecha, ymin = exp(centro - banda), ymax = exp(centro + banda)), fill = "#2c7fb8", alpha = 0.2) +
+  geom_line(data = proy, aes(fecha, exp(centro)), colour = "#2c7fb8", linetype = 2) +
+  geom_line(data = proy, aes(fecha, real)) +
+  labs(title = "BTC: proyección a 90 días con ARIMA(0,1,0) con deriva (banda del 95 %)", x = NULL, y = NULL)
+
+cat(sprintf("Banda del 95 %% a 90 días: de %.0f%% a %+.0f%% alrededor del centro\n",
+            100 * (exp(-tail(proy$banda, 1)) - 1), 100 * (exp(tail(proy$banda, 1)) - 1)))
+cat(sprintf("Días dentro de la banda: %.0f%%\n",
+            100 * mean(proy$real >= exp(proy$centro - proy$banda) & proy$real <= exp(proy$centro + proy$banda))))
+```
+
+La proyección honesta de un criptoactivo es un **abanico**: a 90 días, de perder un 45 % a ganar más de
+un 80 %. El centro casi no se mueve: la deriva diaria es diminuta frente a la volatilidad.
+
+## 8. Así lo usa el piloto
+
+- **No pronostica el precio**: la poca memoria de los rendimientos depende de unos días extremos, y el
+  mejor ARIMA no mejora al paseo aleatorio fuera de la muestra.
+- **Usa la memoria que sí existe**, la de los rendimientos al cuadrado: su volatilidad prevista es un
+  modelo para la **varianza**, la EWMA de la Unidad 6.
+- **Sus escenarios no usan la banda normal**: las caídas de cripto son más frecuentes de lo que promete
+  la normal. Para la probabilidad de caer más de un 10 % el próximo mes, remuestrea días reales (Unidad 8).
+
+## Ejercicios
+
+1. **ETH y SOL.** Repite la tabla de AIC y BIC con ETH y con SOL.
+2. **auto.arima.** Ejecuta `auto.arima(r)`. ¿Elige el mismo modelo que la tabla? ¿Y con `ic = "bic"`?
+3. **Semanal.** Agrega los rendimientos por semana y mira su ACF.
+4. **La banda.** ¿Qué porcentaje de días de 2022 quedó fuera de una banda del 95 % a un día
+   (`±1,96 σ`)? Con rendimientos normales sería el 5 %.

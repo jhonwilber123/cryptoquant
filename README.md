@@ -91,9 +91,10 @@ regenera en cada pasada, así que siempre refleja el último estado.
   Escribe tu capital y reparte los importes por activo al momento.
 - **El experimento en vivo** — progreso de las hipótesis pre-registradas y
   resultado acumulado frente al mercado.
-- **Histórico** — curva de capital y caídas frente a buy & hold, con el
-  veredicto honesto: el riesgo está controlado, la ventaja no está demostrada.
-  Incluye la comparación justa, contra buy & hold a igual volatilidad.
+- **Histórico** — curva de capital y caídas frente a la pasiva equiponderada
+  (rebalanceada cada día; el panel la rotula «Buy & hold equiponderado»), con
+  el veredicto honesto: el riesgo está controlado, la ventaja no está
+  demostrada. Incluye la comparación justa, contra la pasiva a igual volatilidad.
 - **Riesgo** — VaR de mañana del sistema y de la pasiva, qué métodos de VaR
   han acertado en el pasado y probabilidad de caídas a 1, 3 y 12 meses. Lo
   genera `python -m cryptoquant riesgo`.
@@ -215,13 +216,18 @@ el resultado no se distingue de la suerte.
 Binance, 8 activos, 2178 barras diarias (2020-09-22 → 2026-09-08), neto de
 comisiones (10 pb) y slippage (5 pb), con `target_volatility: 0.15`:
 
-| | Sistema | Sin ML | Equiponderado | Buy & hold |
+| | Sistema | Sin ML | Pesos iguales + riesgo | Pasiva equiponderada¹ |
 |---|---|---|---|---|
 | CAGR | 6.81% | 4.29% | 5.73% | **10.31%** |
 | Volatilidad | **9.20%** | 9.89% | 9.18% | 68.78% |
 | Sharpe | **0.74** | 0.43 | 0.62 | 0.15 |
 | Max drawdown | **−14.98%** | −18.13% | −15.00% | −81.53% |
 | Martin ratio | **0.99** | 0.50 | 0.83 | 0.20 |
+
+¹ Reparte el capital a partes iguales entre los 8 activos y lo **rebalancea
+cada día al cierre, sin costes**. No es comprar y mantener: sin rebalancear,
+en el mismo periodo, la compra inicial da 7.68% anual, 70.61% de volatilidad
+y −85.83% de caída máxima (`backtest --compare` imprime las dos).
 
 **Léelo con cuidado, porque dice dos cosas opuestas.**
 
@@ -230,7 +236,7 @@ Lo bueno: el riesgo baja de forma brutal. La volatilidad pasa de 68.8% a 9.2%
 pedía: la caída del 81% es la que hace que la gente venda en el peor momento y
 no vuelva.
 
-Lo malo, y es lo que importa: **el buy & hold gana más dinero** (10.31% vs
+Lo malo, y es lo que importa: **la pasiva gana más dinero** (10.31% vs
 6.81% anual). Y sobre todo, el **Sharpe deflactado es del 51.4%**, muy por
 debajo del 95% exigible. Traducido: descontando que he probado varias
 configuraciones y me he quedado con la que mejor salía, este resultado **no se
@@ -241,6 +247,18 @@ Un solo ciclo de mercado (2020-2026) no basta para demostrar una ventaja. Lo
 que sí está demostrado aquí es el **control de riesgo**, que es mecánico y no
 depende de acertar: si fijas 15% de volatilidad, el sistema entrega 11.7%
 mientras está invertido. Eso funciona tengas ventaja predictiva o no.
+
+**Dos errores de implementación (auditoría del 01-10-2026).** El entrenamiento
+del modelo pondera mal sus observaciones: los pesos por unicidad leen la
+posición de salida de cada etiqueta, que es absoluta, como si fuera relativa a
+la ventana. Además, calibra las probabilidades con un bloque que no es el más
+reciente, porque el panel está apilado activo por activo. Ninguno de los dos
+mira al futuro, pero ambos inflan la rentabilidad: corregidos, sobre este mismo
+periodo, el CAGR baja de 6.81% a 5.38% (solo los pesos) y a 1.82% (los dos), y
+el Sharpe de 0.74 a 0.61 y 0.22, mientras la volatilidad (8-9%) y el drawdown
+(−15% a −16%) apenas cambian. El modelo no se corrige mientras dure el forward
+test pre-registrado, porque cambiarlo exige una enmienda. El análisis está en
+`python -m cryptoquant tesis` (`reports/tesis/sensibilidad_implementacion.csv`).
 
 ---
 
@@ -280,6 +298,10 @@ hipótesis y una de ellas se declara irresoluble de entrada:
 | **H1** | El control de riesgo entrega la volatilidad objetivo en vivo | Sí, ~6 meses |
 | **H2** | Las decisiones en vivo son reproducibles y siguen el calendario del backtest | Sí, ~1-2 meses |
 | **H3** | El sistema bate al buy & hold ajustado a igual volatilidad | **No, ~46 años** |
+
+En H3, «buy & hold» es el término del pre-registro, que no se modifica. Lo
+que se mide es la cesta equiponderada, reequilibrada en cada anotación y sin
+costes.
 
 ### Por qué el diario está sellado
 
@@ -397,6 +419,11 @@ La versión en Python vive en `cryptoquant/laboratorio/` con su notebook; la de
 R, en `laboratorio/r/laboratorio.Rmd`. Ambas parten del mismo CSV y producen
 las mismas variables. El laboratorio no toca `data/cache/` ni el diario.
 
+Para estudiar tema a tema, [`clase/cuadernos/`](clase/cuadernos/LEEME.md) tiene
+un cuaderno por unidad del temario, en Python (Colab) y en R (RStudio), que
+termina en lo que hace el piloto con ese tema. El último reconstruye el piloto
+entero y lo contrasta cifra a cifra con su código.
+
 ---
 
 ## Riesgo — [`cryptoquant/riesgo/`](cryptoquant/riesgo/)
@@ -483,6 +510,9 @@ python -m cryptoquant piloto --texto    # el plan de hoy en la consola
 
 Solo recomienda: no usa claves de API ni envía órdenes. Solo escucha en este
 equipo, y la cartera se guarda en `data/piloto/`, fuera de git.
+
+Para abrirlo desde el móvil o desde otro equipo, se publica en un servidor
+propio con Docker, HTTPS y contraseña: [`deploy/LEEME.md`](deploy/LEEME.md).
 
 ---
 

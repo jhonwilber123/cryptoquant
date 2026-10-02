@@ -1,0 +1,347 @@
+---
+title: "Unidad 9 · El piloto de riesgo por dentro"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a hacer:** reconstruir en R, con lo aprendido en las ocho unidades, cada pantalla del piloto de
+riesgo, y comprobar que llegas a las mismas cifras que la app (que está escrita en Python).
+
+| Pantalla | Qué responde | Unidades |
+|---|---|---|
+| **Hoy** | cuánto tener en cripto y qué órdenes dar | 3, 4, 6 |
+| **Tiempos duros** | cuánto perderías si se repitiera lo peor | 2, 8 |
+| **La regla en el pasado** | qué habría pasado siguiendo la regla desde 2020 | 3, 6 |
+| **Mi diario** | cuánto ha ganado o perdido tu cartera, sin contar ingresos | 2 |
+
+$$\text{parte en cripto} = \min\left(\text{máximo},\ \frac{\text{objetivo}}{\text{volatilidad prevista}}\right) \times \text{freno}(\text{caída})$$
+
+Valores de fábrica: objetivo 15 % (**Prudente**), máximo 100 %, EWMA con λ = 0,94, freno desde una caída
+del 10 %, banda del 5 % y un coste de 0,15 % por operación.
+
+```{r comun}
+source("comun.R")
+AJUSTES <- list(objetivo = 0.15, max_exposicion = 1, banda = 0.05, freno_inicio = 0.10, freno_tope = 0.25,
+                freno_minimo = 0.25, freno_ventana = 180, minimo_orden = 10, coste = 0.0015, lam = 0.94)
+ESTABLES <- c("USDT", "USDC", "FDUSD", "DAI")
+tenencias <- c(BTC = 0.05, ETH = 1.2, SOL = 10, USDT = 500)
+```
+
+## 1. La cartera y los datos
+
+La cartera de ejemplo del manual, valorada con el cierre del 26-09-2026 (la app usa el precio de ahora).
+
+```{r cartera}
+precios_hist <- cierres()
+cripto <- tenencias[!names(tenencias) %in% ESTABLES]
+efectivo <- sum(tenencias[names(tenencias) %in% ESTABLES])
+precio <- unlist(tail(precios_hist, 1)[names(cripto)])
+valor <- cripto * precio
+total <- sum(valor) + efectivo
+cat(sprintf("Total %.2f USDT: %.2f en cripto (%.1f%%) y %.2f en efectivo\n", total, sum(valor), 100 * sum(valor) / total, efectivo))
+round(valor, 2)
+```
+
+## 2. Hoy: cuánto tener en cripto
+
+**Pasos 1 y 2: la mezcla y su volatilidad prevista.** La mezcla es el peso de cada moneda en la parte
+cripto. Su rendimiento diario (log, días comunes) pasa por la EWMA, que arranca con la varianza de los 30
+primeros días.
+
+```{r volatilidad}
+ewma_varianza <- function(x, lam = 0.94, arranque = 30) {
+  v <- mean((x[1:arranque] - mean(x[1:arranque]))^2)
+  salida <- numeric(length(x))
+  for (i in seq_along(x)) {
+    v <- lam * v + (1 - lam) * x[i]^2
+    salida[i] <- v
+  }
+  salida[1:arranque] <- NA                           # el arranque no es una previsión
+  salida
+}
+mezcla <- valor / sum(valor)
+comunes <- drop_na(precios_hist[c("fecha", names(mezcla))])
+lr <- apply(log(as.matrix(comunes[names(mezcla)])), 2, diff)
+fechas_lr <- comunes$fecha[-1]
+sigma <- sqrt(ewma_varianza(as.vector(lr %*% mezcla), AJUSTES$lam) * ANUAL)
+round(mezcla, 4)
+cat(sprintf("Volatilidad prevista: %.2f%% al año\n", 100 * tail(sigma, 1)))
+```
+
+**Pasos 3 a 5: escala, freno y banda.** Una cartera recién anotada no tiene historia: caída 0, freno 1
+(la sección 6 lo calcula con historia).
+
+```{r decision}
+factor_freno <- function(caida, aj = AJUSTES) {
+  c <- -min(caida, 0)
+  lineal <- if (c <= aj$freno_inicio) 1 else if (c >= aj$freno_tope) 0 else
+    1 - (c - aj$freno_inicio) / (aj$freno_tope - aj$freno_inicio)
+  max(aj$freno_minimo, lineal)
+}
+escala <- min(AJUSTES$max_exposicion, AJUSTES$objetivo / tail(sigma, 1))
+freno <- factor_freno(0)
+exposicion <- escala * freno
+cripto_objetivo <- exposicion * total
+mover <- cripto_objetivo - sum(valor)
+umbral <- max(AJUSTES$banda * total, AJUSTES$minimo_orden)
+cat(sprintf("Escala %.2f%% × freno %.2f = %.2f%% en cripto -> %.2f USDT\n", 100 * escala, freno, 100 * exposicion, cripto_objetivo))
+cat(sprintf("Hay que mover %+.2f USDT; la banda es %.2f: %s\n", mover, umbral, if (abs(mover) >= umbral) "se opera" else "no se opera"))
+```
+
+**Paso 6: las órdenes**, y **paso 7: de dónde viene el riesgo** (Unidad 4).
+
+```{r ordenes}
+ordenes <- tibble(moneda = names(cripto), precio, unidades = cripto,
+                  unidades_objetivo = cripto_objetivo * mezcla / precio) |>
+  mutate(diferencia = unidades_objetivo - unidades, importe_USDT = diferencia * precio,
+         orden = sprintf("%s %.4f %s", ifelse(diferencia < 0, "vender", "comprar"), abs(diferencia), moneda))
+ordenes |> mutate(across(where(is.numeric), ~ round(.x, 4))) |> as.data.frame()
+
+covarianza_ewma <- function(X, lam = 0.94, arranque = 30) {
+  v <- cov(X[1:arranque, ]) * (arranque - 1) / arranque
+  for (i in seq_len(nrow(X))) v <- lam * v + (1 - lam) * tcrossprod(X[i, ])
+  v
+}
+S <- covarianza_ewma(lr)
+peso <- valor / total
+marginal <- as.vector(S %*% peso)
+data.frame(peso_dinero = peso, peso_riesgo = peso * marginal / sum(peso * marginal),
+           volatilidad_anual = sqrt(diag(S) * ANUAL)) |> round(3)
+```
+
+## 3. Tiempos duros: si se repitiera lo peor
+
+El peor cambio de valor de cada tramo, **con las unidades de hoy y sin hacer nada**, y con las que recomienda
+el piloto. Días comunes; si falta una vela suelta, se repite el último precio (`complete` + `fill`).
+
+```{r escenarios}
+escenarios <- function(valores, efectivo) {
+  v <- valores[valores > 0]
+  total <- sum(v) + efectivo
+  px <- precios_hist |> select(fecha, all_of(names(v))) |> drop_na() |>
+    complete(fecha = seq(min(fecha), max(fecha), by = "day")) |> fill(everything())
+  P <- as.matrix(px[names(v)])
+  bind_rows(lapply(c(`Peor día` = 1, `Peor semana` = 7, `Peor mes` = 30, `Peor trimestre` = 90, `Peor año` = 365), function(h) {
+    cambio <- as.vector((P[-(1:h), , drop = FALSE] / P[1:(nrow(P) - h), , drop = FALSE] - 1) %*% v)
+    i <- which.min(cambio)
+    perdida <- min(0, cambio[i])
+    tibble(perdida_USDT = perdida, perdida_pct = perdida / total,
+           desde = px$fecha[i], hasta = px$fecha[i + h])
+  }), .id = "tramo")
+}
+valor_plan <- cripto_objetivo * mezcla
+efectivo_plan <- total - cripto_objetivo
+peor <- escenarios(valor, efectivo) |>
+  left_join(escenarios(valor_plan, efectivo_plan) |> select(tramo, plan_USDT = perdida_USDT, plan_pct = perdida_pct), by = "tramo")
+peor |> mutate(across(ends_with("USDT"), ~ round(.x)), across(ends_with("pct"), ~ sprintf("%.1f%%", 100 * .x))) |> as.data.frame()
+```
+
+El peor año (de noviembre de 2021 a noviembre de 2022) se llevaría tres cuartas partes de la cartera de
+hoy; siguiendo la recomendación, un 24 %.
+
+**Un mal día y el próximo mes** (Unidad 8). El Monte Carlo usa el generador de azar de R, así que sus
+probabilidades difieren de las del piloto en el segundo decimal; el mal día coincide al decimal.
+
+```{r mal-dia}
+Pc <- as.matrix(comunes[names(mezcla)])
+R <- Pc[-1, ] / Pc[-nrow(Pc), ] - 1
+mal_dia <- function(valores, efectivo, dias = 730) {
+  x <- as.vector(tail(R, dias) %*% (valores / (sum(valores) + efectivo)))
+  q <- quantile(x, 0.05, names = FALSE)
+  c(mal_dia = -q, si_se_pasa = -mean(x[x <= q]))
+}
+prob_caer_mes <- function(valores, efectivo, dias = 21, n = 10000, bloque = 10) {
+  set.seed(42)
+  nb <- ceiling(dias / bloque)
+  inicios <- matrix(sample.int(nrow(R) - bloque + 1, n * nb, replace = TRUE) - 1, n)
+  idx <- do.call(cbind, lapply(seq_len(nb), function(b) sapply(1:bloque, function(k) inicios[, b] + k)))[, 1:dias]
+  caminos <- matrix(efectivo, n, dias)
+  for (a in names(valores)) caminos <- caminos + valores[[a]] * t(apply(matrix(1 + R[idx, a], n), 1, cumprod))
+  caminos <- cbind(1, caminos / (sum(valores) + efectivo))
+  caida <- apply(caminos, 1, function(x) min(x / cummax(x) - 1))
+  c(P_caer_10 = mean(caida <= -0.10), P_caer_20 = mean(caida <= -0.20))
+}
+round(cbind(hoy = c(mal_dia(valor, efectivo), prob_caer_mes(valor, efectivo)),
+            recomendacion = c(mal_dia(valor_plan, efectivo_plan), prob_caer_mes(valor_plan, efectivo_plan))), 4)
+```
+
+## 4. La regla en el pasado
+
+La regla aplicada **cada día desde 2020** con la mezcla de hoy, frente a **comprar y mantener** (la mezcla
+al 100 %, rebalanceada cada día, sin costes) y a la **pasiva con la misma volatilidad** (una parte fija de
+la mezcla que se mueve lo mismo que la regla: la comparación justa). Todo causal:
+
+1. Se empieza en estables.
+2. Al cierre del día t, exposición objetivo = escala × freno.
+3. Solo se opera si el cambio supera la banda del 5 %; operar cuesta un 0,15 % de lo que se mueve.
+4. El día t+1 la cartera gana o pierde según su exposición; entre operaciones, la parte cripto **deriva**.
+5. El freno mide la caída de la propia estrategia desde su máximo de 180 días.
+
+```{r simular}
+simular <- function(mezcla, aj = AJUSTES) {
+  P <- as.matrix(drop_na(precios_hist[c("fecha", names(mezcla))])[names(mezcla)])
+  lr <- apply(log(P), 2, diff)
+  escala <- pmin(aj$objetivo / (sqrt(ewma_varianza(as.vector(lr %*% mezcla), aj$lam)) * sqrt(ANUAL)), aj$max_exposicion)
+  validos <- which(!is.na(escala))
+  r <- as.vector(expm1(lr) %*% mezcla)[validos]      # rendimiento simple de la mezcla
+  e_obj <- escala[validos]
+  n <- length(e_obj)
+  eq <- rep(1, n); expo <- 0
+  out <- matrix(0, n - 1, 5, dimnames = list(NULL, c("exposicion", "pasiva", "estrategia", "freno", "giro")))
+  for (k in 1:(n - 1)) {
+    pico <- max(eq[max(1, k - aj$freno_ventana + 1):k])
+    freno <- factor_freno(eq[k] / pico - 1, aj)
+    objetivo <- e_obj[k] * freno
+    giro <- 0
+    if (abs(objetivo - expo) >= aj$banda) { giro <- abs(objetivo - expo); expo <- objetivo }
+    ret <- expo * r[k + 1] - aj$coste * giro
+    eq[k + 1] <- eq[k] * (1 + ret)
+    out[k, ] <- c(expo, r[k + 1], ret, freno, giro)
+    crece <- 1 + expo * r[k + 1]
+    expo <- if (crece > 0) expo * (1 + r[k + 1]) / crece else 0
+  }
+  t <- as_tibble(out)
+  t$fecha <- drop_na(precios_hist[c("fecha", names(mezcla))])$fecha[-1][validos][-1]
+  t$pasiva_igual_vol <- sd(t$estrategia) / sd(t$pasiva) * t$pasiva
+  t
+}
+resumen <- function(t) {
+  bind_rows(lapply(c(`la regla del piloto` = "estrategia", `comprar y mantener` = "pasiva",
+                     `pasiva con la misma volatilidad` = "pasiva_igual_vol"), function(col) {
+    r <- t[[col]]; eq <- cumprod(1 + r)
+    tibble(rentabilidad_anual = tail(eq, 1)^(ANUAL / length(r)) - 1, volatilidad = sd(r) * sqrt(ANUAL),
+           caida_maxima = min(eq / cummax(eq) - 1), sharpe = mean(r) / sd(r) * sqrt(ANUAL),
+           capital_final = 10000 * tail(eq, 1))
+  }), .id = "serie")
+}
+t <- simular(mezcla)
+cat(sprintf("Del %s al %s | operaciones: %d | exposición media %.0f%%\n", format(min(t$fecha), "%d-%m-%Y"),
+            format(max(t$fecha), "%d-%m-%Y"), sum(t$giro > 0), 100 * mean(t$exposicion)))
+resumen(t) |> mutate(across(-serie, ~ round(.x, 3))) |> as.data.frame()
+```
+
+```{r simular-grafico, fig.height = 5}
+t |>
+  transmute(fecha, `comprar y mantener` = 10000 * cumprod(1 + pasiva),
+            `pasiva con la misma volatilidad` = 10000 * cumprod(1 + pasiva_igual_vol),
+            `la regla del piloto` = 10000 * cumprod(1 + estrategia)) |>
+  pivot_longer(-fecha) |>
+  ggplot(aes(fecha, value, colour = name)) +
+  geom_line() +
+  scale_y_log10() +
+  scale_colour_manual(values = c("#999999", "#c0392b", "#2c7fb8")) +
+  labs(title = "10 000 USDT con la mezcla de hoy (escala logarítmica)", x = NULL, y = NULL, colour = NULL) +
+  theme(legend.position = "bottom")
+```
+
+- **Comprar y mantener** ganó muchísimo más (un 55 % anual), con una volatilidad del 65 % y una caída del
+  80 %.
+- **La regla** se movió el 15 % pedido, con una caída máxima del 26 % y unas dos operaciones al mes.
+- Frente a la **pasiva con la misma volatilidad**, la regla queda parecida. El piloto no promete ganar
+  más: promete que tu cartera se mueva lo que elegiste. Es lo que concluye la tesis: reducir el riesgo,
+  sí (HE3); ganar más que la pasiva con el mismo riesgo, no demostrado (HE4).
+
+## 5. Más ajustes: qué cambia cada perilla
+
+```{r variantes}
+variantes <- list(`de fábrica (Prudente)` = list(), `Moderado (25 %)` = list(objetivo = 0.25),
+                  `Decidido (40 %)` = list(objetivo = 0.40), `sin banda` = list(banda = 0),
+                  `sin freno` = list(freno_minimo = 1), `λ = 0,97 (más lenta)` = list(lam = 0.97))
+bind_rows(lapply(variantes, function(cambios) {
+  tv <- simular(mezcla, modifyList(AJUSTES, cambios))
+  resumen(tv)[1, ] |> select(-serie, -capital_final) |>
+    mutate(exposicion_media = mean(tv$exposicion), operaciones = sum(tv$giro > 0))
+}), .id = "variante") |> mutate(across(rentabilidad_anual:exposicion_media, ~ round(.x, 3))) |> as.data.frame()
+```
+
+- Subir el **objetivo** sube la volatilidad, la caída y, en este periodo alcista, la rentabilidad.
+- **Sin banda**, más de 2000 operaciones para un resultado parecido.
+- **Sin freno**, la caída máxima empeora unos 2 puntos.
+- **λ = 0,97** sale algo mejor en este periodo. Elegir el ajuste que mejor le fue al pasado es
+  **sobreajustar** (Unidad 7): la tesis fijó sus parámetros antes de mirar los resultados.
+
+## 6. Mi diario: cuánto has ganado, sin contar ingresos
+
+La cartera de ejemplo guardada el 01-03-2026 y un ingreso de 1000 USDT el 01-07-2026. El piloto **encadena
+rentabilidades**: cada día valora las unidades de la víspera con los precios de ayer y de hoy. Un ingreso
+no cuenta como ganancia.
+
+```{r diario}
+fotos <- list(list(fecha = as.Date("2026-03-01"), tenencias = c(BTC = 0.05, ETH = 1.2, SOL = 10, USDT = 500)),
+              list(fecha = as.Date("2026-07-01"), tenencias = c(BTC = 0.05, ETH = 1.2, SOL = 10, USDT = 1500)))
+valorar <- function(ten, dia) {
+  fila <- precios_hist[precios_hist$fecha == dia, ]
+  sum(sapply(names(ten), function(a) if (a %in% ESTABLES) ten[[a]] else ten[[a]] * fila[[a]]))
+}
+vigente <- function(dia, estricto) {
+  validas <- Filter(function(f) if (estricto) f$fecha < dia else f$fecha <= dia, fotos)
+  validas[[length(validas)]]$tenencias
+}
+dias <- precios_hist$fecha[precios_hist$fecha >= fotos[[1]]$fecha]
+indice <- 1; saldo <- valorar(fotos[[1]]$tenencias, dias[1])
+for (i in 2:length(dias)) {
+  ten <- vigente(dias[i], TRUE)                       # las tenencias de la víspera
+  indice[i] <- indice[i - 1] * valorar(ten, dias[i]) / valorar(ten, dias[i - 1])
+  saldo[i] <- valorar(vigente(dias[i], FALSE), dias[i])
+}
+diario <- tibble(fecha = dias, valor = saldo, sin_ingreso = saldo[1] * indice)
+diario |>
+  pivot_longer(-fecha) |>
+  mutate(name = ifelse(name == "valor", "valor de la cartera (con el ingreso)", "lo que valdría sin el ingreso")) |>
+  ggplot(aes(fecha, value, colour = name)) +
+  geom_line() +
+  geom_vline(xintercept = as.Date("2026-07-01"), linetype = 3) +
+  scale_colour_manual(values = c("#c0392b", "#999999")) +
+  labs(title = "Mi diario: el ingreso del 01-07 sube el valor, no la rentabilidad (USDT)", x = NULL, y = NULL, colour = NULL) +
+  theme(legend.position = "bottom")
+caida <- tail(indice, 1) / max(tail(indice, 180)) - 1
+cat(sprintf("Valor: %.0f -> %.0f USDT | rentabilidad real: %+.1f%% | caída desde el máximo de 180 días %.1f%% -> freno %.2f\n",
+            saldo[1], tail(saldo, 1), 100 * (tail(indice, 1) - 1), 100 * caida, factor_freno(caida)))
+```
+
+## 7. Contraste con Python y con el piloto
+
+Las cifras del piloto para esta cartera y estos cierres, calculadas con su código (`motor.py`, en Python):
+
+```{r contraste}
+if (HASTA == as.Date("2026-09-26")) {
+  piloto <- c(volatilidad_prevista = 0.48690055701037627, parte_en_cripto = 0.3080711201503172,
+              cantidad_a_mover = -5845.922624138269, peor_ano_USDT = -6841.800410482101,
+              mal_dia = 0.04021774700737722, regla_rentabilidad_anual = 0.14545143327781096,
+              regla_caida_maxima = -0.26082658214432164, operaciones = 145)
+  r_aqui <- c(tail(sigma, 1), exposicion, mover, peor$perdida_USDT[peor$tramo == "Peor año"],
+              mal_dia(valor, efectivo)[["mal_dia"]], resumen(t)$rentabilidad_anual[1], resumen(t)$caida_maxima[1],
+              sum(t$giro > 0))
+  data.frame(piloto = format(piloto, digits = 10, scientific = FALSE), R = format(r_aqui, digits = 10, scientific = FALSE),
+             coincide = ifelse(abs(piloto - r_aqui) <= 1e-8 * pmax(1, abs(piloto)), "OK", "DISTINTO"))
+} else {
+  cat("Las cifras de referencia son las del periodo que acaba el 26-09-2026: con otro HASTA no se pueden comparar.\n")
+}
+```
+
+R llega a las mismas cifras que la app: lo que hace el piloto no es una caja negra, son las ideas de
+estas nueve unidades.
+
+## 8. Lo que el piloto no hace
+
+- **No predice el precio** (unidades 5 y 7): solo prevé cuánto se moverá.
+- **No opera por ti**: no se conecta a tu cuenta ni tiene claves. Recomienda; tú decides.
+- **No garantiza nada**: el futuro puede traer algo peor que lo peor que ya pasó.
+- **"Comprar y mantener"** en el piloto es tu reparto rebalanceado cada día y sin costes.
+
+## Ejercicios
+
+1. **Tu cartera.** Cambia `tenencias` y repite todo.
+2. **Igual riesgo por moneda.** Pesos $1/\sigma_i$ normalizados, con la diagonal de `S`. Simula la regla.
+3. **Una sola moneda.** `simular(c(BTC = 1))`. ¿Cuánto se parecen comprar y mantener y la pasiva con la
+   misma volatilidad?
+4. **El piloto de verdad.** Compara con `python -m cryptoquant piloto --texto`. ¿Por qué no son exactamente
+   iguales?

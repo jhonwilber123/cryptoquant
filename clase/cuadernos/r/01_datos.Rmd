@@ -1,0 +1,259 @@
+---
+title: "Unidad 1 · Entorno de trabajo y datos en R"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Comprobar el entorno: qué versión de R tienes y qué paquetes están instalados.
+- Descargar precios reales de Binance desde R, entender lo que devuelve y pasarlo a una tabla.
+- Revisar la calidad de los datos antes de usarlos: huecos, duplicados, velas imposibles.
+- Construir y guardar la base histórica con la que trabajan todos los cuadernos siguientes.
+
+**Qué tiene que ver con la app.** El *piloto de riesgo* empieza exactamente aquí: antes de recomendar
+nada, descarga los cierres diarios de cada moneda desde 2020 y los guarda para no volver a pedirlos.
+El cuaderno de Python de esta unidad hace lo mismo; los dos llegan a la misma tabla.
+
+**Cómo se usa.** Abre `cuadernos.Rproj` en RStudio (o el proyecto de Posit Cloud) y este archivo.
+Cada bloque gris es un *chunk*: se ejecuta con el triángulo verde ▶ o con **Ctrl + Mayús + Intro**.
+El botón **Knit** ejecuta todo y produce una página HTML como la que estás leyendo.
+
+## 1. El entorno
+
+En R, las librerías se llaman **paquetes**. Se instalan una vez por equipo con `install.packages()`
+y se cargan en cada sesión con `library()`. Los que usan estos cuadernos:
+
+```r
+install.packages(c("dplyr", "tidyr", "readr", "ggplot2", "lubridate", "jsonlite", "zoo",
+                   "lmtest", "forecast", "tseries", "rugarch", "rpart", "ranger", "rmarkdown"))
+```
+
+En Posit Cloud hay que instalarlos en cada proyecto nuevo; tarda unos minutos la primera vez.
+
+```{r entorno}
+R.version.string
+paquetes <- c("dplyr", "tidyr", "readr", "ggplot2", "lubridate", "jsonlite")
+data.frame(paquete = paquetes,
+           version = sapply(paquetes, function(p) as.character(packageVersion(p))))
+
+suppressPackageStartupMessages({
+  library(dplyr); library(tidyr); library(readr); library(ggplot2); library(lubridate)
+})
+theme_set(theme_minimal(base_size = 11))
+```
+
+## 2. Una petición a Binance
+
+Binance publica gratis sus datos de mercado: no hace falta cuenta ni clave. Usamos
+`data-api.binance.vision`, porque `api.binance.com` rechaza las conexiones desde Estados Unidos, donde
+están los servidores de Posit Cloud. El piloto usa el mismo dominio.
+
+Cada fila es una **vela**: lo que hizo el precio durante un día. Pidamos solo tres.
+`jsonlite::fromJSON` convierte la respuesta en una matriz de texto.
+
+```{r peticion}
+API <- "https://data-api.binance.vision/api/v3/klines"
+crudo <- jsonlite::fromJSON(paste0(API, "?symbol=BTCUSDT&interval=1d&startTime=1672531200000&limit=3"))
+crudo
+```
+
+Cada fila trae 12 campos sin nombre:
+
+| Columna | Campo | Ejemplo |
+|---|---|---|
+| 1 | hora de **apertura**, en milisegundos desde 1970 (UTC) | `1672531200000` = 01-01-2023 |
+| 2 a 5 | apertura, máximo, mínimo, **cierre** | como **texto** |
+| 6 | volumen, en BTC | |
+| 7 | hora de **cierre** de la vela | 23:59:59.999 del mismo día |
+| 8 a 12 | volumen en USDT, número de operaciones y otros | no los usaremos |
+
+Fíjate en la tercera fecha: R la muestra como `1.672704e+12`, que es el mismo número en notación
+científica (1,672704 × 10¹²). Al convertirla con `as.numeric` no se pierde nada.
+
+Tres trampas clásicas: los precios llegan como texto; las fechas están en **milisegundos** (R cuenta
+en segundos, hay que dividir entre 1000); y la vela se fecha con la hora de **apertura**, no con la de
+cierre. Las columnas en R empiezan en 1, no en 0 como en Python: el cierre es la quinta.
+El cierre del 01-01-2023 fue **16 616,75 USDT**; lo usaremos como control.
+
+```{r convertir}
+tibble(
+  fecha  = as.POSIXct(as.numeric(crudo[, 1]) / 1000, origin = "1970-01-01", tz = "UTC"),
+  open   = as.numeric(crudo[, 2]), high = as.numeric(crudo[, 3]),
+  low    = as.numeric(crudo[, 4]), close = as.numeric(crudo[, 5]),
+  volume = as.numeric(crudo[, 6])
+)
+```
+
+## 3. Muchas velas: paginación
+
+Binance da como mucho 1000 velas por petición; desde 2020 hay más de 2400 días. Se pide por
+**páginas**: cada petición empieza tras la última vela recibida, y se para con una página incompleta.
+También se quita la vela **de hoy**, que no ha cerrado: su "cierre" es el precio de este instante.
+El piloto decide solo con velas cerradas por la misma razón.
+
+Como son velas diarias, la fecha se guarda como `Date` (un día, sin hora).
+
+```{r descargar}
+descargar <- function(simbolo, desde = as.Date("2020-01-01")) {
+  inicio <- as.numeric(as.POSIXct(desde, tz = "UTC")) * 1000
+  trozos <- list()
+  repeat {
+    url <- sprintf("%s?symbol=%sUSDT&interval=1d&startTime=%.0f&limit=1000", API, simbolo, inicio)
+    lote <- jsonlite::fromJSON(url)
+    if (length(lote) == 0) break
+    trozos[[length(trozos) + 1]] <- lote[, 1:7, drop = FALSE]
+    if (nrow(lote) < 1000) break                     # página incompleta: no hay más
+    inicio <- as.numeric(lote[nrow(lote), 1]) + 1    # la siguiente, tras la última vela
+  }
+  m <- do.call(rbind, trozos)
+  ahora_ms <- as.numeric(Sys.time()) * 1000
+  tibble(
+    fecha  = as.Date(as.POSIXct(as.numeric(m[, 1]) / 1000, origin = "1970-01-01", tz = "UTC")),
+    open   = as.numeric(m[, 2]), high = as.numeric(m[, 3]), low = as.numeric(m[, 4]),
+    close  = as.numeric(m[, 5]), volume = as.numeric(m[, 6]),
+    cierre_ms = as.numeric(m[, 7])
+  ) |>
+    filter(cierre_ms < ahora_ms) |>                  # fuera la vela que no ha cerrado
+    select(-cierre_ms) |>
+    distinct(fecha, .keep_all = TRUE)
+}
+
+btc <- descargar("BTC")
+cat(nrow(btc), "velas, del", format(min(btc$fecha)), "al", format(max(btc$fecha)), "\n")
+tail(btc)
+```
+
+## 4. ¿Los datos son buenos?
+
+Cinco comprobaciones antes de calcular nada: tipos, orden y duplicados, huecos, coherencia de las
+velas y un dato de control.
+
+```{r calidad}
+str(btc)
+cat("Ordenadas:", !is.unsorted(btc$fecha), "| Fechas repetidas:", sum(duplicated(btc$fecha)), "\n")
+cat("Huecos de más de un día:", sum(diff(btc$fecha) > 1), "\n")
+imposibles <- with(btc, high < pmax(open, close) | low > pmin(open, close))
+cat("Velas imposibles:", sum(imposibles), "| Valores vacíos:", sum(is.na(btc)), "\n")
+cat("Cierre del 01-01-2023:", btc$close[btc$fecha == as.Date("2023-01-01")], "(debe ser 16616.75)\n")
+summary(btc)
+```
+
+## 5. Estructurar la base: varias monedas en una tabla
+
+La cartera de ejemplo del piloto tiene **BTC, ETH y SOL**. Se juntan sus cierres en una tabla con una
+fila por día y una columna por moneda. `full_join` conserva todos los días aunque alguna moneda no
+cotizara: SOL empezó en agosto de 2020 y sus primeros meses quedan como `NA`. No se rellenan con un
+precio inventado.
+
+```{r tabla}
+ACTIVOS <- c("BTC", "ETH", "SOL")
+base <- lapply(setNames(ACTIVOS, ACTIVOS), descargar)
+cierres <- Reduce(function(x, y) full_join(x, y, by = "fecha"),
+                  lapply(ACTIVOS, function(a) select(base[[a]], fecha, !!a := close))) |>
+  arrange(fecha)
+colSums(!is.na(cierres[ACTIVOS]))
+cat("Primer día de SOL:", format(min(cierres$fecha[!is.na(cierres$SOL)])), "\n")
+tail(cierres)
+```
+
+Para comparar monedas de precios tan distintos, se **normalizan** a 100 el primer día común: qué
+habría pasado con 100 dólares en cada una. Para dibujar con ggplot2, la tabla pasa a **formato
+largo** (una fila por día y moneda) con `pivot_longer`; la Unidad 2 lo explica con calma.
+
+```{r base100}
+COLORES <- c(BTC = "#F7931A", ETH = "#627EEA", SOL = "#9945FF")
+comunes <- tidyr::drop_na(cierres)                      # solo los días en que cotizan las tres
+base100 <- comunes |> mutate(across(all_of(ACTIVOS), ~ .x / first(.x) * 100))
+base100 |>
+  pivot_longer(all_of(ACTIVOS), names_to = "moneda", values_to = "valor") |>
+  ggplot(aes(fecha, valor, colour = moneda)) +
+  geom_line() +
+  scale_y_log10() +
+  scale_colour_manual(values = COLORES) +
+  labs(title = "100 dólares el primer día común (escala logarítmica)", x = NULL, y = NULL)
+round(unlist(tail(base100, 1)[ACTIVOS]))
+```
+
+## 6. Guardar la base
+
+Se guarda una copia en **CSV**, con fechas en formato ISO (`2020-01-01T00:00:00Z`). Son los mismos
+nombres y el mismo formato que los CSV de respaldo del curso y que los de Python: cualquiera de los
+dos lenguajes puede leer los archivos del otro.
+
+```{r guardar}
+for (a in ACTIVOS) {
+  base[[a]] |>
+    mutate(fecha = format(as.POSIXct(fecha, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")) |>
+    write_csv(paste0(a, "USDT_1d.csv"))
+  cat("guardado", paste0(a, "USDT_1d.csv"), nrow(base[[a]]), "filas\n")
+}
+```
+
+## 7. Caso aplicado: una base histórica que se mantiene sola
+
+`velas()` usa el CSV si existe y llega hasta la fecha pedida; si no, descarga y lo guarda. Además fija
+el **periodo de estudio**, del 01-01-2020 al 26-09-2026, para que todos veamos las mismas cifras en R
+y en Python. Con `HASTA <- NA` llega hasta ayer.
+
+Esta función, con `descargar()` y `cierres()`, está en **`comun.R`**: los demás cuadernos la cargan con
+`source("comun.R")`.
+
+```{r velas}
+DESDE <- as.Date("2020-01-01")
+HASTA <- as.Date("2026-09-26")
+
+velas <- function(simbolo) {
+  archivo <- paste0(simbolo, "USDT_1d.csv")
+  fin <- if (is.na(HASTA)) Sys.Date() - 1 else HASTA
+  df <- NULL
+  if (file.exists(archivo)) {
+    df <- read_csv(archivo, show_col_types = FALSE) |> mutate(fecha = as.Date(fecha, tz = "UTC"))
+  }
+  if (is.null(df) || max(df$fecha) < fin) {           # no hay copia, o se ha quedado corta
+    df <- descargar(simbolo)
+    write_csv(mutate(df, fecha = format(as.POSIXct(fecha, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")), archivo)
+  }
+  filter(df, fecha >= DESDE, fecha <= fin)
+}
+
+tabla <- Reduce(function(x, y) full_join(x, y, by = "fecha"),
+                lapply(ACTIVOS, function(a) select(velas(a), fecha, !!a := close)))
+cat(format(min(tabla$fecha)), "a", format(max(tabla$fecha)), "|", nrow(tabla), "días\n")
+tail(tabla, 3)
+```
+
+## 8. Así lo hace el piloto
+
+El módulo `cryptoquant/piloto/mercado.py` hace lo mismo, en Python, con algunos cuidados más:
+
+| En este cuaderno | En el piloto |
+|---|---|
+| `data-api.binance.vision`, velas diarias desde 2020 | lo mismo |
+| quita la vela que no ha cerrado | lo mismo: decide con el último **cierre** diario |
+| guarda un CSV por moneda | guarda las velas en `data/piloto/velas/` |
+| si el CSV se queda corto, descarga todo de nuevo | descarga solo lo que falta y lo **junta** con lo guardado |
+| — | si Binance no da velas hasta ayer, usa las que tiene y **avisa** |
+
+El aviso existe por un fallo real: una versión anterior, cuando la descarga fallaba, reemplazaba las
+velas guardadas por otras más viejas y planificaba con datos de hacía un mes sin decirlo. **Un dato
+viejo que no avisa es peor que un error.**
+
+## Ejercicios
+
+1. **Velas horarias.** Cambia `interval=1d` por `interval=1h` y descarga las velas horarias de ETH de
+   los últimos 7 días. ¿Cuántas filas deberían salir? Ojo: con velas horarias la fecha necesita hora,
+   así que no la conviertas a `Date`.
+2. **Una cuarta moneda.** Añade `"BNB"` a la tabla. ¿Desde qué fecha tiene datos? ¿Cuántos días
+   comunes quedan con las cuatro? (`tidyr::drop_na`).
+3. **El error de las fechas.** Convierte la columna 1 sin dividir entre 1000. ¿Qué año sale?
+4. **Python y R.** Abre en R un CSV guardado por el cuaderno de Python (o al revés) y comprueba que el
+   cierre del 26-09-2026 es el mismo.

@@ -1,0 +1,251 @@
+---
+title: "Unidad 3 · Preparación de variables para modelamiento"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- La diferencia entre rendimientos **simples** y **logarítmicos**, y cuándo usar cada uno.
+- Transformar series de precios: escala logarítmica, base 100, estandarización, anualización.
+- Construir variables derivadas: medias móviles, volatilidad, RSI, caída desde el máximo, rezagos.
+- La regla de oro: **ninguna variable puede usar información del futuro**.
+- Dejar un conjunto de datos listo para los modelos, con su variable objetivo.
+
+**Qué tiene que ver con la app.** El piloto descansa en dos variables derivadas: la **volatilidad
+prevista** (una media exponencial de los rendimientos al cuadrado) y la **caída desde el máximo** de los
+últimos 180 días. Al final las calculas tú. Las cifras coinciden con las del cuaderno de Python.
+
+```{r comun}
+source("comun.R")
+```
+
+## 1. Rendimientos simples y logarítmicos
+
+| | Fórmula | Se suma bien… |
+|---|---|---|
+| **simple** | $r_t = P_t / P_{t-1} - 1$ | **entre activos**: el de una cartera es la media ponderada de los simples |
+| **logarítmico** | $\ell_t = \ln(P_t / P_{t-1})$ | **en el tiempo**: el de un año es la suma de los de cada día |
+
+```{r rendimientos}
+btc <- velas("BTC")
+p <- btc$close
+simple <- p / lag(p) - 1
+logr <- log(p) - log(lag(p))
+tibble(fecha = btc$fecha, simple, log = logr) |>
+  filter(fecha %in% as.Date(c("2020-03-12", "2020-03-13", "2023-01-02"))) |>
+  mutate(across(c(simple, log), ~ sprintf("%+.2f%%", 100 * .x)))
+```
+
+El 12-03-2020 BTC cayó un 39,5 % (simple), que en logarítmico es un −50,3 %. Al día siguiente rebotó un
+16,2 % (15,0 % en logarítmico). Un día normal, como el 02-01-2023, los dos dan +0,34 %.
+
+### Propiedad 1: los logarítmicos se suman en el tiempo
+
+```{r propiedad1}
+cat(sprintf("Suma de los rendimientos log diarios: %.4f\n", sum(logr, na.rm = TRUE)))
+cat(sprintf("ln(precio final / precio inicial):    %.4f\n", log(last(p) / first(p))))
+cat(sprintf("Suma de los simples (¡mal!):          %.4f  ->  real: %.4f\n",
+            sum(simple, na.rm = TRUE), last(p) / first(p) - 1))
+cat("+50 % y −50 % en simple:", 1.5 * 0.5 - 1, "| en log:", log(1.5) + log(0.5), "= ln(0.75)\n")
+```
+
+Sumar rendimientos simples no da el total: hay que multiplicar `(1 + r)`. Con los logarítmicos basta
+sumar; por eso se usan para medir la volatilidad en el tiempo y en casi todos los modelos.
+
+### Propiedad 2: los simples se promedian entre activos
+
+Con la cartera de ejemplo del piloto (0,05 BTC, 1,2 ETH y 10 SOL), el día de la quiebra de FTX:
+
+```{r propiedad2}
+precios <- drop_na(cierres())
+unidades <- c(BTC = 0.05, ETH = 1.2, SOL = 10)
+i <- which(precios$fecha == as.Date("2022-11-09"))
+v_ayer <- unlist(precios[i - 1, ACTIVOS]) * unidades
+v_hoy  <- unlist(precios[i, ACTIVOS]) * unidades
+pesos <- v_ayer / sum(v_ayer)
+r_s <- unlist(precios[i, ACTIVOS]) / unlist(precios[i - 1, ACTIVOS]) - 1
+r_l <- log(1 + r_s)
+cat(sprintf("Cambio real del valor:         %+.4f%%\n", 100 * (sum(v_hoy) / sum(v_ayer) - 1)))
+cat(sprintf("Σ peso × simple:               %+.4f%%   (exacto)\n", 100 * sum(pesos * r_s)))
+cat(sprintf("Σ peso × log, pasado a simple: %+.4f%%   (aproximado)\n", 100 * expm1(sum(pesos * r_l))))
+```
+
+El piloto usa cada uno donde corresponde: mide la volatilidad con logarítmicos y calcula el rendimiento
+de tu mezcla pasando a simples (`expm1(x)` es $e^x - 1$).
+
+## 2. Transformaciones de la serie
+
+- **Escala logarítmica**, **base 100** y **anualizar** ($\times\sqrt{365}$), como en las unidades 1 y 2.
+- **Estandarizar** con la media y la desviación de **toda** la muestra hace que cada día "conozca" el
+  futuro. Hay que usar las de una ventana **móvil** del pasado.
+
+```{r transformaciones}
+r <- logr[-1]
+cat("Volatilidad diaria:", round(sd(r), 4), "| anual:", round(sd(r) * sqrt(ANUAL), 3), "\n")
+z_todo <- (r - mean(r)) / sd(r)
+cat("Días a más de 4 desviaciones:", sum(abs(z_todo) > 4),
+    "| una normal esperaría", round(2 * pnorm(-4) * length(r), 2), "\n")
+```
+
+## 3. Variables derivadas
+
+| Variable | Qué mide |
+|---|---|
+| `r`, `r_1`, `r_2` | rendimiento log de hoy, de ayer y de anteayer (**rezagos**) |
+| `dist_sma50` | cuánto está el precio por encima de su media de 50 días |
+| `mom_30` | rendimiento de los últimos 30 días (*momentum*) |
+| `vol_30` | volatilidad anual de los últimos 30 días |
+| `vol_ewma` | volatilidad anual con media exponencial, λ = 0,94: **la del piloto** |
+| `rsi_14` | índice de fuerza relativa de 14 días (0 a 100) |
+| `caida_180` | caída desde el máximo de los últimos 180 días: **el freno del piloto** |
+| `vol_rel` | volumen de hoy frente a su media de 30 días |
+
+**La media exponencial** (EWMA): $\sigma^2_t = \lambda\,\sigma^2_{t-1} + (1-\lambda)\,r_t^2$. Hoy pesa
+$1-\lambda$ = 6 %, ayer $6\% \times 0{,}94$, y así sucesivamente. La función `ewm()` de abajo es esa
+recursión, escrita a mano para que se vea; da lo mismo que `ewm(adjust=False)` de pandas.
+`zoo::rollapplyr` calcula funciones sobre ventanas que terminan cada día (solo pasado).
+
+```{r variables}
+ewm <- function(x, alpha) {
+  y <- rep(NA_real_, length(x))
+  previo <- NA_real_
+  for (i in seq_along(x)) {
+    if (is.na(x[i])) next
+    previo <- if (is.na(previo)) x[i] else alpha * x[i] + (1 - alpha) * previo
+    y[i] <- previo
+  }
+  y
+}
+movil <- function(x, n, f) zoo::rollapplyr(x, n, f, fill = NA)
+
+d <- btc |>
+  select(fecha, close, volume) |>
+  mutate(
+    r = log(close) - log(lag(close)),
+    r_1 = lag(r), r_2 = lag(r, 2),
+    dist_sma50 = close / movil(close, 50, mean) - 1,
+    mom_30 = log(close) - log(lag(close, 30)),
+    vol_30 = movil(r, 30, sd) * sqrt(ANUAL),
+    vol_ewma = sqrt(ewm(r^2, 1 - 0.94) * ANUAL),
+    cambio = close - lag(close),
+    rsi_14 = 100 - 100 / (1 + ewm(pmax(cambio, 0), 1 / 14) / ewm(pmax(-cambio, 0), 1 / 14)),
+    caida_180 = close / zoo::rollapplyr(close, 180, max, partial = TRUE) - 1,
+    vol_rel = volume / movil(volume, 30, mean)
+  ) |>
+  select(-cambio)
+tail(select(d, -close, -volume), 5) |> mutate(across(-fecha, ~ round(.x, 3)))
+```
+
+```{r graficos, fig.height = 6}
+d |>
+  transmute(fecha, `log10 del precio` = log10(close), `volatilidad EWMA` = vol_ewma,
+            `volatilidad 30 días` = vol_30, `caída desde el máximo de 180 días` = caida_180) |>
+  pivot_longer(-fecha) |>
+  ggplot(aes(fecha, value)) +
+  geom_line(colour = "#555555") +
+  facet_wrap(~ name, ncol = 1, scales = "free_y") +
+  labs(x = NULL, y = NULL)
+```
+
+La volatilidad viene **en rachas**: un mes agitado suele seguir a otro. Por eso se puede prever
+(Unidad 6), mientras que la dirección del precio no.
+
+## 4. La regla de oro: nada del futuro
+
+Una media móvil **centrada** (`align = "center"`, o `center=True` en pandas) promedia para el día t
+diez días antes y diez **después**. Comparemos su relación con el rendimiento de **mañana** con la de una
+media del pasado:
+
+```{r fuga}
+manana <- lead(d$r)
+dist_bien <- d$close / movil(d$close, 20, mean) - 1
+dist_mal  <- d$close / zoo::rollapply(d$close, 20, mean, fill = NA, align = "center") - 1
+cat(sprintf("Media del pasado: %+.3f | media centrada: %+.3f\n",
+            cor(dist_bien, manana, use = "complete.obs"), cor(dist_mal, manana, use = "complete.obs")))
+```
+
+La centrada parece útil y es un espejismo. Tres comprobaciones para cualquier variable:
+
+1. ¿Se podría haber calculado al cierre del día t, con lo que se sabía entonces?
+2. ¿Usa `lead()`, ventanas centradas, `fill(.direction = "up")` o estadísticas de toda la muestra?
+3. ¿"Predice" demasiado bien? Más de un 55-60 % de aciertos en dirección es casi siempre un error.
+
+(La correlación de la media centrada sale algo distinta en R y en Python porque una ventana par de 20
+días no tiene centro exacto: cada lenguaje la desplaza medio día hacia un lado distinto. La conclusión
+es la misma.)
+
+## 5. La variable objetivo
+
+| Objetivo | Tipo | Código |
+|---|---|---|
+| `r_manana`: rendimiento de mañana | regresión | `lead(r)` |
+| `sube`: ¿mañana sube? | clasificación | `lead(r) > 0` |
+| `vol_7`: volatilidad de los próximos 7 días | regresión | desviación de `r` de t+1 a t+7 |
+
+```{r objetivo}
+d <- d |>
+  mutate(r_manana = lead(r),
+         sube = as.numeric(r_manana > 0),
+         vol_7 = lead(movil(r, 7, sd), 7) * sqrt(ANUAL))
+tail(select(d, fecha, r, r_manana, sube, vol_7), 9)
+```
+
+## 6. Caso aplicado: el conjunto de datos listo para modelar
+
+```{r dataset}
+variables <- c("r", "r_1", "r_2", "dist_sma50", "mom_30", "vol_30", "vol_ewma", "rsi_14", "caida_180", "vol_rel")
+objetivos <- c("r_manana", "sube", "vol_7")
+dataset <- d |> select(fecha, all_of(c(variables, objetivos))) |> drop_na()
+entreno <- filter(dataset, fecha < as.Date("2025-01-01"))
+prueba  <- filter(dataset, fecha >= as.Date("2025-01-01"))
+cat(nrow(dataset), "días:", nrow(entreno), "para entrenar y", nrow(prueba), "para probar\n")
+write_csv(dataset, "dataset_btc.csv")
+sort(round(sapply(variables, function(v) cor(dataset[[v]], dataset$r_manana)), 3))
+sort(round(sapply(variables, function(v) cor(dataset[[v]], dataset$vol_7)), 3))
+```
+
+Ninguna variable pasa de 0,07 de correlación con el rendimiento de mañana (0,07² ≈ 0,5 % de su
+variación). La volatilidad reciente, en cambio, se correlaciona en torno a 0,4 con la de la semana
+siguiente. Esa diferencia es la idea sobre la que está construido el piloto.
+
+## 7. Así lo usa el piloto
+
+Para una cartera que fuera **solo BTC**, con los valores de fábrica:
+
+$$\text{parte en cripto} = \min\left(1,\ \frac{15\,\%}{\text{vol\_ewma}}\right) \times \text{freno}(\text{caida\_180})$$
+
+El freno vale 1 mientras la caída no pase del 10 %, baja en línea recta hasta 0,25 con una caída del
+25 % y no baja de ahí. En el piloto real la caída es la de **tu cuenta** y la volatilidad, la de **tu
+mezcla** (Unidad 9).
+
+```{r piloto}
+freno <- function(caida, inicio = 0.10, tope = 0.25, minimo = 0.25) {
+  pmax(minimo, pmin(1, pmax(0, 1 - (-caida - inicio) / (tope - inicio))))
+}
+d <- mutate(d, expo = pmin(1, 0.15 / vol_ewma) * freno(caida_180))
+hoy <- tail(d, 1)
+cat(sprintf("%s: volatilidad prevista %.1f%%, caída %.1f%% -> en BTC el %.0f%%, en USDT el resto\n",
+            format(hoy$fecha, "%d-%m-%Y"), 100 * hoy$vol_ewma, 100 * hoy$caida_180, 100 * hoy$expo))
+ggplot(d, aes(fecha, expo)) +
+  geom_line(colour = COLORES[["BTC"]]) +
+  ylim(0, 1.05) +
+  labs(title = "Parte en BTC que recomendaría la regla, si solo tuvieras BTC", x = NULL, y = NULL)
+```
+
+## Ejercicios
+
+1. **Lambda.** Calcula `vol_ewma` con λ = 0,97 y con λ = 0,80. ¿Cuál reacciona antes al 12-03-2020?
+2. **ETH.** Repite la sección 7 con ETH. ¿Por qué recomienda menos que con BTC?
+3. **Otra fuga.** Estandariza `r` con la media y la desviación de los últimos 365 días
+   (`movil(r, 365, mean)`). ¿Cuántos días a más de 4 desviaciones salen ahora?
+4. **Una variable tuya.** Por ejemplo `(high − low) / close`. ¿Pasa las tres comprobaciones de la sección
+   4? ¿Se correlaciona con `vol_7`?

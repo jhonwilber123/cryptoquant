@@ -1,0 +1,269 @@
+---
+title: "Unidad 4 · Modelamiento cuantitativo: regresión lineal"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Ajustar una regresión lineal **simple** y una **múltiple** con `lm()`, e interpretar sus coeficientes.
+- Revisar los supuestos: residuos, heterocedasticidad, colas gruesas, y usar errores típicos robustos.
+- Reconocer la **multicolinealidad** y medirla con el VIF.
+- Evaluar un modelo **fuera de la muestra**, que es la única evaluación que cuenta.
+
+**Qué tiene que ver con la app.** En la pantalla **Hoy**, el piloto muestra qué parte del **riesgo**
+aporta cada moneda. El peso en riesgo es el peso en dinero por la **beta** de la moneda frente a tu
+cartera: una regresión. Al final la reproduces, con las mismas cifras que el piloto y que Python.
+
+```{r comun}
+source("comun.R")
+library(lmtest)          # bptest() y coeftest()
+
+precios <- drop_na(cierres())                      # días comunes a BTC, ETH y SOL
+ret <- precios |>
+  mutate(across(all_of(ACTIVOS), ~ log(.x) - log(lag(.x)))) |>
+  drop_na()
+cat(nrow(ret), "días, del", format(min(ret$fecha)), "al", format(max(ret$fecha)), "\n")
+round(cor(ret[ACTIVOS]), 3)
+```
+
+## 1. Regresión simple: ¿cuánto se mueve ETH cuando se mueve BTC?
+
+$$r_{ETH,t} = \alpha + \beta\, r_{BTC,t} + \varepsilon_t$$
+
+- $\beta$ (**beta**): cuánto se mueve ETH, de media, cuando BTC se mueve un 1 %.
+- $\alpha$: el rendimiento de ETH los días en que BTC no se mueve.
+- $\varepsilon$: lo que BTC no explica.
+
+```{r simple}
+m1 <- lm(ETH ~ BTC, data = ret)
+summary(m1)
+```
+
+```{r simple-grafico, fig.width = 5.5, fig.height = 4.5}
+ggplot(ret, aes(BTC, ETH)) +
+  geom_point(size = 0.6, alpha = 0.3, colour = COLORES[["ETH"]]) +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black", se = FALSE) +
+  labs(title = sprintf("ETH frente a BTC (β = %.2f)", coef(m1)["BTC"]),
+       x = "rendimiento de BTC", y = "rendimiento de ETH")
+```
+
+**Cómo se lee:**
+
+- **β ≈ 1,1**: un día en que BTC sube un 1 %, ETH sube de media un 1,1 %. ETH amplifica a BTC.
+- **α** es prácticamente cero y su *p-valor* es alto: no hay un rendimiento "extra" de ETH que se pueda
+  distinguir del azar.
+- **R² ≈ 0,66**: BTC explica dos tercios de lo que se mueve ETH cada día.
+
+## 2. Los supuestos, y errores típicos robustos
+
+Los *p-valores* de `summary()` suponen errores con varianza constante (**homocedasticidad**). En cripto
+no se cumple. `bptest()` (Breusch-Pagan) lo contrasta: p pequeño = la varianza cambia.
+
+```{r supuestos}
+bptest(m1)
+e <- resid(m1)
+cat("Curtosis de los residuos:", round(mean((e - mean(e))^4) / mean((e - mean(e))^2)^2, 1),
+    "(una normal tiene 3)\n")
+```
+
+```{r supuestos-grafico, fig.width = 5.5, fig.height = 3.5}
+diag <- tibble(ajustado = fitted(m1), residuo = resid(m1))
+p1 <- ggplot(diag, aes(ajustado, residuo)) + geom_point(size = 0.5, alpha = 0.3) +
+  geom_hline(yintercept = 0) + labs(title = "Residuos frente a ajustados")
+p2 <- ggplot(diag, aes(sample = residuo)) + stat_qq(size = 0.5) + stat_qq_line() +
+  labs(title = "Residuos frente a la normal (QQ)")
+p1
+p2
+```
+
+Hay heterocedasticidad y colas mucho más gruesas que la normal. La β sigue siendo válida, pero su error
+típico no. Los **errores robustos HC1** (de White) no suponen varianza constante. La fórmula cabe en
+cuatro líneas: $(X^\top X)^{-1}\,\big(\sum_i e_i^2\, x_i x_i^\top\big)\,(X^\top X)^{-1} \cdot \frac{n}{n-k}$.
+El paquete `sandwich` lo hace con `vcovHC(m, type = "HC1")`; aquí, a mano:
+
+```{r robustos}
+hc1 <- function(m) {
+  X <- model.matrix(m); e <- resid(m); n <- nrow(X); k <- ncol(X)
+  pan <- solve(crossprod(X))
+  pan %*% crossprod(X * e) %*% pan * n / (n - k)
+}
+cbind(coef = coef(m1), ee_clasico = sqrt(diag(vcov(m1))), ee_robusto = sqrt(diag(hc1(m1)))) |> round(5)
+```
+
+El error robusto de β es mayor que el clásico: la estimación es menos precisa de lo que decía
+`summary()`. En datos financieros, usa siempre los robustos: `coeftest(m, vcov. = hc1(m))`.
+
+## 3. Regresión múltiple: SOL explicado por BTC y ETH
+
+$$r_{SOL,t} = \alpha + \beta_1\, r_{BTC,t} + \beta_2\, r_{ETH,t} + \varepsilon_t$$
+
+Cada coeficiente es el efecto de su variable **manteniendo las demás constantes**.
+
+```{r multiple}
+m_btc <- lm(SOL ~ BTC, data = ret)
+m_eth <- lm(SOL ~ ETH, data = ret)
+m2 <- lm(SOL ~ BTC + ETH, data = ret)
+coeftest(m2, vcov. = hc1(m2))
+cat(sprintf("β de BTC: sola %.3f, con ETH %.3f | β de ETH: sola %.3f, con BTC %.3f\n",
+            coef(m_btc)["BTC"], coef(m2)["BTC"], coef(m_eth)["ETH"], coef(m2)["ETH"]))
+cat(sprintf("R²: solo BTC %.3f | solo ETH %.3f | BTC y ETH %.3f\n",
+            summary(m_btc)$r.squared, summary(m_eth)$r.squared, summary(m2)$r.squared))
+```
+
+Sola, la β de BTC sobre SOL es 1,17; con ETH en el modelo baja a 0,32, porque parte de lo que "explicaba"
+BTC era lo que BTC y ETH tienen en común. Cada β múltiple responde a: *si BTC se mueve un 1 % y ETH no,
+¿cuánto se mueve SOL?* Con monedas tan correlacionadas esa situación casi no ocurre.
+
+## 4. Multicolinealidad
+
+El **VIF** de cada variable es $1/(1-R^2_j)$, con $R^2_j$ el de la regresión de esa variable sobre las
+demás. Más de 10 es grave. (El paquete `car` tiene `vif()`; aquí, a mano.)
+
+```{r vif}
+vif <- function(datos, columnas) {
+  sapply(columnas, function(v) {
+    r2 <- summary(lm(reformulate(setdiff(columnas, v), v), data = datos))$r.squared
+    1 / (1 - r2)
+  })
+}
+round(vif(ret, c("BTC", "ETH")), 2)
+```
+
+Para ver un VIF grave se añade una variable **casi idéntica** a BTC: su rendimiento de la apertura al
+cierre del día. Como las criptos cotizan sin pausa, la apertura de hoy es casi el cierre de ayer.
+
+```{r colineal}
+btc <- velas("BTC") |> select(fecha, open, close)
+ret2 <- ret |> left_join(btc, by = "fecha") |> mutate(BTC_ac = log(close / open))
+cat("Correlación entre las dos versiones de BTC:", round(cor(ret2$BTC, ret2$BTC_ac), 5), "\n")
+round(vif(ret2, c("BTC", "BTC_ac", "ETH")))
+m3 <- lm(SOL ~ BTC + BTC_ac + ETH, data = ret2)
+coeftest(m3, vcov. = hc1(m3))
+```
+
+El VIF pasa de 300 000 y el modelo reparte el efecto de BTC entre las dos versiones al azar: una sale con
++10 y la otra con −10, con errores típicos de 20. Su suma (≈ 0,3) es la β de antes. **Remedio:** quitar
+una de las dos, o combinarlas.
+
+## 5. Evaluar el modelo: dentro y fuera de la muestra
+
+Se entrena hasta 2024 y se evalúa en 2025-2026, comparando con predecir siempre la media.
+
+```{r fuera}
+r2_fuera <- function(y, pred, referencia) 1 - sum((y - pred)^2) / sum((y - referencia)^2)
+entreno <- filter(ret, fecha < as.Date("2025-01-01"))
+prueba  <- filter(ret, fecha >= as.Date("2025-01-01"))
+m_e <- lm(SOL ~ BTC + ETH, data = entreno)
+pred <- predict(m_e, prueba)
+cat(sprintf("R² en entrenamiento: %.3f\n", summary(m_e)$r.squared))
+cat(sprintf("R² fuera de la muestra (2025-2026): %.3f\n", r2_fuera(prueba$SOL, pred, mean(entreno$SOL))))
+cat(sprintf("RMSE: modelo %.4f | predecir la media %.4f\n",
+            sqrt(mean((prueba$SOL - pred)^2)), sqrt(mean((prueba$SOL - mean(entreno$SOL))^2))))
+```
+
+La relación del mismo día se mantiene fuera de la muestra, e incluso mejora: en 2025-2026 SOL se movió
+más pegada a BTC y ETH. Las relaciones cambian con el tiempo; la beta de ETH frente a BTC, con ventanas
+de 180 días:
+
+```{r beta-movil}
+ret$beta_180 <- zoo::rollapplyr(as.matrix(ret[c("ETH", "BTC")]), 180,
+                                function(m) cov(m[, 1], m[, 2]) / var(m[, 2]),
+                                by.column = FALSE, fill = NA)
+ggplot(ret, aes(fecha, beta_180)) +
+  geom_line(colour = COLORES[["ETH"]]) +
+  geom_hline(yintercept = coef(m1)["BTC"], linetype = 2) +
+  labs(title = "Beta de ETH frente a BTC, ventanas de 180 días", x = NULL, y = NULL)
+```
+
+## 6. Caso aplicado: ¿qué relaciones sirven para **anticipar**?
+
+Lo útil es si algo de **hoy** anticipa algo de **mañana**. Dos regresiones con variables de BTC
+(Unidad 3), entrenadas hasta 2024 y evaluadas en 2025-2026: el **rendimiento** de mañana y la
+**volatilidad** de los próximos 7 días.
+
+```{r anticipar}
+ewm <- function(x, alpha) {
+  y <- rep(NA_real_, length(x)); previo <- NA_real_
+  for (i in seq_along(x)) {
+    if (is.na(x[i])) next
+    previo <- if (is.na(previo)) x[i] else alpha * x[i] + (1 - alpha) * previo
+    y[i] <- previo
+  }
+  y
+}
+d <- velas("BTC") |>
+  filter(fecha %in% ret$fecha) |>                    # los mismos días que el resto del cuaderno
+  transmute(fecha, r = log(close) - log(lag(close))) |>
+  mutate(r_1 = lag(r),
+         vol_30 = zoo::rollapplyr(r, 30, sd, fill = NA) * sqrt(ANUAL),
+         vol_ewma = sqrt(ewm(r^2, 0.06) * ANUAL),
+         r_manana = lead(r),
+         vol_7 = lead(zoo::rollapplyr(r, 7, sd, fill = NA), 7) * sqrt(ANUAL)) |>
+  drop_na()
+e <- filter(d, fecha < as.Date("2025-01-01"))
+p <- filter(d, fecha >= as.Date("2025-01-01"))
+sapply(c("r_manana", "vol_7"), function(obj) {
+  m <- lm(reformulate(c("r", "r_1", "vol_30", "vol_ewma"), obj), data = e)
+  c(entreno = summary(m)$r.squared, fuera = r2_fuera(p[[obj]], predict(m, p), mean(e[[obj]])))
+}) |> t() |> round(4)
+```
+
+- **Rendimiento de mañana**: R² prácticamente cero dentro y fuera de la muestra.
+- **Volatilidad de la semana próxima**: se anticipa una cuarta parte de su variación en entrenamiento y
+  más de un tercio en 2025-2026.
+
+Es la conclusión que sostiene al piloto: no adivina si el precio sube; mide cuánto se va a mover.
+
+## 7. Así lo usa el piloto: cuánto riesgo aporta cada moneda
+
+$$\text{peso en riesgo}_i = \frac{w_i\,(\Sigma w)_i}{w^\top \Sigma\, w} = w_i \times \beta_i$$
+
+$\beta_i$ es la beta de la moneda frente a tu cartera. Con la cartera de ejemplo (0,05 BTC, 1,2 ETH,
+10 SOL y 500 USDT) y los cierres del 26-09-2026: primero con betas por regresión del último año, después
+con la covarianza EWMA (λ = 0,94) que usa el piloto. Esta arranca con la covarianza de los 30 primeros
+días, dividida entre n (no entre n − 1, como hace `cov()`).
+
+```{r riesgo}
+unidades <- c(BTC = 0.05, ETH = 1.2, SOL = 10)
+usdt <- 500
+valor <- unidades * unlist(tail(precios, 1)[ACTIVOS])
+w <- valor / (sum(valor) + usdt)
+
+X <- as.matrix(ret[ACTIVOS])
+ultimo <- tail(X, 365)
+r_cartera <- ultimo %*% w
+betas <- apply(ultimo, 2, function(r) coef(lm(r ~ r_cartera))[2])
+
+covarianza_ewma <- function(X, lam = 0.94, arranque = 30) {
+  v <- cov(X[1:arranque, ]) * (arranque - 1) / arranque
+  for (i in seq_len(nrow(X))) v <- lam * v + (1 - lam) * tcrossprod(X[i, ])
+  v
+}
+S <- covarianza_ewma(X)
+marginal <- as.vector(S %*% w)
+data.frame(peso_dinero = w, beta_regresion = betas,
+           riesgo_regresion = w * betas / sum(w * betas),
+           riesgo_piloto = w * marginal / sum(w * marginal),
+           vol_anual_ewma = sqrt(diag(S) * ANUAL)) |> round(3)
+```
+
+SOL es el 13 % del dinero y aporta el 18 % del riesgo (β > 1); BTC es el 46 % del dinero y el 43 % del
+riesgo. La columna `riesgo_piloto` es la tabla **"Qué parte del riesgo aporta cada moneda"** del piloto,
+con las mismas cifras.
+
+## Ejercicios
+
+1. **Al revés.** Ajusta `lm(BTC ~ ETH)`. ¿La β es la inversa de la de `ETH ~ BTC`? ¿Por qué no?
+2. **Rendimientos en %.** Multiplica los rendimientos por 100. ¿Qué cambia en α, β y el R²?
+3. **Un año agitado.** Ajusta `ETH ~ BTC` solo con 2022 y solo con 2025. ¿Cambia la β?
+4. **Tu cartera.** ¿Qué tendrían que cumplir las betas para que el peso en riesgo de cada moneda fuera
+   igual a su peso en dinero?

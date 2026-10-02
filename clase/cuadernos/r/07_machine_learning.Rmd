@@ -1,0 +1,265 @@
+---
+title: "Unidad 7 · Machine learning aplicado a criptoactivos"
+subtitle: "Análisis cuantitativo de criptoactivos con Python y R"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+lang: es
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(fig.width = 9, fig.height = 3.6, dpi = 110, comment = "#>", warning = FALSE, message = FALSE)
+```
+
+**Qué vas a aprender**
+
+- Qué es el aprendizaje **supervisado** y la diferencia entre **clasificación** y **regresión**.
+- Preparar variables y objetivo, y dividir en entrenamiento y prueba **sin mirar el futuro**.
+- Entrenar regresión logística (`glm`), **árboles de decisión** (`rpart`) y **random forest** (`ranger`), y
+  evaluarlos contra una línea base.
+- Interpretar un modelo: importancia de variables, y por qué una importancia alta no significa que el
+  modelo sirva.
+
+**Qué tiene que ver con la app.** El piloto **no usa machine learning para adivinar la dirección**: el
+mejor modelo no le gana a una moneda al aire. Apuntando a la **volatilidad**, en cambio, funciona, y ahí
+el piloto usa algo mucho más simple, la EWMA, que rinde parecido.
+
+Los números no coinciden al decimal con los de Python: los árboles y los bosques de `rpart`/`ranger` y de
+scikit-learn se construyen con reglas y generadores de azar distintos. La regresión logística y la lineal
+sí coinciden. Las conclusiones son las mismas.
+
+```{r comun}
+source("comun.R")
+library(rpart)
+library(ranger)
+SEMILLA <- 42
+```
+
+## 1. Qué es el aprendizaje supervisado
+
+Se le dan al modelo muchos ejemplos de **variables** (X) con su **respuesta** (y), y aprende una regla de
+X a y.
+
+| Tipo | La respuesta es… | Ejemplo aquí |
+|---|---|---|
+| **clasificación** | una categoría | ¿mañana BTC sube o baja? |
+| **regresión** | un número | ¿cuánto sube mañana? ¿cuánto se moverá esta semana? |
+
+Tres trampas habituales en finanzas: **fuga de información** (usar el futuro), **sobreajuste** (memorizar
+el ruido) y **cambio de régimen** (lo que valía en 2021 puede no valer en 2025).
+
+## 2. Preparación: variables y objetivos
+
+```{r datos}
+ewm <- function(x, alpha) {
+  y <- rep(NA_real_, length(x)); previo <- NA_real_
+  for (i in seq_along(x)) {
+    if (is.na(x[i])) next
+    previo <- if (is.na(previo)) x[i] else alpha * x[i] + (1 - alpha) * previo
+    y[i] <- previo
+  }
+  y
+}
+movil <- function(x, n, f) zoo::rollapplyr(x, n, f, fill = NA)
+
+d <- velas("BTC") |>
+  mutate(r = log(close) - log(lag(close)),
+         r_1 = lag(r), r_2 = lag(r, 2), r_3 = lag(r, 3), r_4 = lag(r, 4),
+         vol_7 = movil(r, 7, sd) * sqrt(ANUAL),
+         vol_30 = movil(r, 30, sd) * sqrt(ANUAL),
+         vol_ewma = sqrt(ewm(r^2, 0.06) * ANUAL),
+         dist_sma50 = close / movil(close, 50, mean) - 1,
+         mom_30 = log(close) - log(lag(close, 30)),
+         cambio = close - lag(close),
+         rsi_14 = 100 - 100 / (1 + ewm(pmax(cambio, 0), 1 / 14) / ewm(pmax(-cambio, 0), 1 / 14)),
+         vol_rel = volume / movil(volume, 30, mean),
+         # objetivos: lo único que mira al futuro, a propósito
+         r_manana = lead(r),
+         sube = as.integer(r_manana > 0),
+         vol_futura = lead(movil(r, 7, sd), 7) * sqrt(ANUAL),
+         sube_30 = as.integer(lead(close, 30) > close))
+VARIABLES <- c("r", "r_1", "r_2", "r_3", "r_4", "vol_7", "vol_30", "vol_ewma", "dist_sma50", "mom_30", "rsi_14", "vol_rel")
+datos <- d |> select(fecha, all_of(VARIABLES), r_manana, sube, vol_futura) |> drop_na()
+cat(nrow(datos), "días; BTC subió el", sprintf("%.1f%%", 100 * mean(datos$sube)), "de ellos\n")
+```
+
+## 3. División en entrenamiento y prueba
+
+Entrenamiento: hasta 2023. Prueba: de 2024 al 26-09-2026. Siempre **por fecha**.
+
+Con un objetivo a 30 días (*¿estará BTC más alto dentro de 30 días?*), dos días seguidos comparten 29 de
+los 30 días y casi siempre tienen la misma respuesta. Si se divide al azar, el modelo copia a los vecinos:
+
+```{r division}
+corte <- as.Date("2024-01-01")
+entreno <- filter(datos, fecha < corte)
+prueba <- filter(datos, fecha >= corte)
+cat("Entrenamiento:", nrow(entreno), "días | Prueba:", nrow(prueba), "días\n")
+
+bosque <- function(formula, datos, ...) {
+  ranger(formula, data = datos, num.trees = 300, min.bucket = 20, mtry = 3, seed = SEMILLA, ...)
+}
+x30 <- d |> select(fecha, all_of(VARIABLES), sube_30) |> drop_na() |> mutate(sube_30 = factor(sube_30))
+f30 <- reformulate(VARIABLES, "sube_30")
+set.seed(SEMILLA)
+azar <- x30[sample(nrow(x30)), ]
+n <- floor(0.7 * nrow(azar))
+acierto_azar <- mean(predict(bosque(f30, azar[1:n, ]), azar[-(1:n), ])$predictions == azar$sube_30[-(1:n)])
+e30 <- filter(x30, fecha < corte); p30 <- filter(x30, fecha >= corte)
+acierto_fecha <- mean(predict(bosque(f30, e30), p30)$predictions == p30$sube_30)
+cat(sprintf("¿Más alto en 30 días? Al azar: %.1f%% | por fecha: %.1f%% | siempre «sube»: %.1f%%\n",
+            100 * acierto_azar, 100 * acierto_fecha, 100 * mean(p30$sube_30 == "1")))
+```
+
+Al azar, el modelo parece un "bot" ganador; por fecha, acierta menos que decir siempre "sube".
+
+## 4. Clasificación: ¿mañana sube o baja?
+
+Líneas base: **siempre lo más frecuente** en el entrenamiento y **repite hoy**. Modelos: **regresión
+logística** (`glm`), **árbol** de 3 niveles (`rpart`) y **random forest** de 300 árboles (`ranger`).
+Además del acierto, el **AUC** (0,5 = azar), que aquí se calcula con los rangos de las probabilidades.
+
+```{r clasificacion}
+auc <- function(y, p) {
+  r <- rank(p); n1 <- sum(y == 1); n0 <- sum(y == 0)
+  (sum(r[y == 1]) - n1 * (n1 + 1) / 2) / (n1 * n0)
+}
+f_sube <- reformulate(VARIABLES, "sube")
+mayoria <- as.integer(mean(entreno$sube) > 0.5)
+
+logit <- glm(f_sube, data = entreno, family = binomial)
+p_logit <- predict(logit, prueba, type = "response")
+
+arbol <- rpart(reformulate(VARIABLES, "factor(sube)"), data = entreno, method = "class",
+               control = rpart.control(maxdepth = 3, minbucket = 20, cp = 0))
+p_arbol <- predict(arbol, prueba)[, "1"]
+
+rf <- bosque(reformulate(VARIABLES, "factor(sube)"), entreno, probability = TRUE)
+p_rf <- predict(rf, prueba)$predictions[, "1"]
+
+tibble(modelo = c(sprintf("siempre «%s»", if (mayoria == 1) "sube" else "baja"), "repite hoy",
+                  "regresión logística", "árbol (3 niveles)", "random forest"),
+       acierto = c(mean(prueba$sube == mayoria), mean(as.integer(prueba$r > 0) == prueba$sube),
+                   mean((p_logit > 0.5) == prueba$sube), mean((p_arbol > 0.5) == prueba$sube),
+                   mean((p_rf > 0.5) == prueba$sube)),
+       AUC = c(0.5, NA, auc(prueba$sube, p_logit), auc(prueba$sube, p_arbol), auc(prueba$sube, p_rf))) |>
+  mutate(across(-modelo, ~ round(.x, 3)))
+```
+
+Ningún modelo se separa de las líneas base: aciertos alrededor del 50 % y AUC alrededor de 0,5. Con unos
+1000 días de prueba, el margen de error del acierto es de ±3 puntos.
+
+Así decide el árbol: reglas que parecen sensatas y que fuera de la muestra no aciertan más que el azar.
+
+```{r arbol}
+arbol
+table(real = prueba$sube, predicho = as.integer(p_rf > 0.5))
+```
+
+## 5. Regresión: ¿cuánto se moverá?
+
+Se compara con predecir siempre la media del entrenamiento (R² = 0) y, para la volatilidad, con la regla
+del piloto: **la volatilidad de la semana que viene será la EWMA de hoy**.
+
+```{r regresion}
+r2_fuera <- function(y, pred, referencia) 1 - sum((y - pred)^2) / sum((y - referencia)^2)
+bind_rows(lapply(c("r_manana", "vol_futura"), function(obj) {
+  f <- reformulate(VARIABLES, obj)
+  ref <- mean(entreno[[obj]])
+  tibble(objetivo = obj,
+         lineal = r2_fuera(prueba[[obj]], predict(lm(f, entreno), prueba), ref),
+         random_forest = r2_fuera(prueba[[obj]], predict(bosque(f, entreno), prueba)$predictions, ref),
+         ewma_sin_modelo = if (obj == "vol_futura") r2_fuera(prueba[[obj]], prueba$vol_ewma, ref) else NA)
+})) |> mutate(across(-objetivo, ~ round(.x, 3)))
+```
+
+- **Rendimiento de mañana**: R² cero o negativo.
+- **Volatilidad de la semana próxima**: R² claramente positivo. La EWMA de hoy, sin entrenar nada, queda
+  a la par del random forest; la regresión lineal, por delante.
+
+## 6. Interpretar: qué variables usa el modelo
+
+- **Por impureza**: cuánto ayuda la variable a separar los datos **de entrenamiento**. Siempre reparte
+  importancia, aunque el modelo no sirva.
+- **Por permutación en la prueba**: cuánto **empeora el modelo en la prueba** si se barajan los valores de
+  esa variable. Se calcula a mano: 10 barajadas por variable.
+
+```{r importancia, fig.height = 4.5}
+permutacion <- function(modelo, datos, y, medida, veces = 10) {
+  base <- medida(y, predict(modelo, datos)$predictions)
+  set.seed(SEMILLA)
+  sapply(VARIABLES, function(v) {
+    mean(replicate(veces, {
+      barajado <- datos; barajado[[v]] <- sample(barajado[[v]])
+      base - medida(y, predict(modelo, barajado)$predictions)
+    }))
+  })
+}
+rf_clase <- bosque(reformulate(VARIABLES, "factor(sube)"), entreno, importance = "impurity")
+rf_vol <- bosque(reformulate(VARIABLES, "vol_futura"), entreno, importance = "impurity")
+acierto <- function(y, p) mean(p == y)
+r2 <- function(y, p) 1 - sum((y - p)^2) / sum((y - mean(y))^2)
+imp <- bind_rows(
+  tibble(modelo = "Dirección (sube/baja)", variable = VARIABLES,
+         impureza = rf_clase$variable.importance / sum(rf_clase$variable.importance),
+         permutacion = permutacion(rf_clase, prueba, factor(prueba$sube), acierto)),
+  tibble(modelo = "Volatilidad de la semana próxima", variable = VARIABLES,
+         impureza = rf_vol$variable.importance / sum(rf_vol$variable.importance),
+         permutacion = permutacion(rf_vol, prueba, prueba$vol_futura, r2)))
+imp |>
+  pivot_longer(c(impureza, permutacion), names_to = "medida") |>
+  ggplot(aes(value, reorder(variable, value), fill = medida)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ modelo, scales = "free_x") +
+  labs(x = NULL, y = NULL, fill = NULL)
+```
+
+En **dirección**, la impureza se reparte entre todas las variables, pero la permutación es casi cero o
+negativa en todas. En **volatilidad**, las dos coinciden: importa la volatilidad reciente. **Una
+importancia alta no significa que el modelo sirva**: primero hay que ganarle a la línea base fuera de la
+muestra.
+
+## 7. Caso aplicado: un año tras otro
+
+Validación **hacia delante**: para cada año, se entrena con todos los anteriores y se prueba en ese año.
+
+```{r walk-forward}
+anos <- bind_rows(lapply(2022:2026, function(ano) {
+  e_ <- filter(datos, year(fecha) < ano); p_ <- filter(datos, year(fecha) == ano)
+  m <- bosque(reformulate(VARIABLES, "factor(sube)"), e_)
+  base <- as.integer(mean(e_$sube) > 0.5)
+  tibble(año = as.character(ano), dias = nrow(p_),
+         modelo = mean(predict(m, p_)$predictions == p_$sube), linea_base = mean(p_$sube == base))
+}))
+anos <- bind_rows(anos, tibble(año = "todos", dias = sum(anos$dias),
+                               modelo = weighted.mean(anos$modelo, anos$dias),
+                               linea_base = weighted.mean(anos$linea_base, anos$dias)))
+cat(sprintf("Margen de error con %d días: ±%.1f%%\n", sum(anos$dias[1:5]), 100 * 1.96 * sqrt(0.25 / sum(anos$dias[1:5]))))
+anos |> mutate(across(c(modelo, linea_base), ~ round(.x, 3)))
+```
+
+En R el bosque queda por encima de la línea base cuatro de cinco años y +2,6 puntos en conjunto, justo
+en el límite del margen de error; en Python, el "mismo" modelo queda a +1,4 y por debajo en dos años. Que
+dos implementaciones del mismo método den ventajas distintas ya es una señal: si la ventaja existe, es
+frágil. Para darla por buena habría que contrastarla como hace la tesis, con más activos, costes de
+operar y un protocolo fijado de antemano. Un vendedor de "bots con IA" te enseñaría solo el mejor año.
+
+## 8. Así lo usa el piloto
+
+- **No predice la dirección.** La tesis lo contrastó en 8 criptoactivos con un protocolo registrado de
+  antemano: ganar más que la pasiva con el mismo riesgo **no se demostró** (HE4). Este cuaderno llega a lo
+  mismo con BTC.
+- **Predice la volatilidad**, que sí se deja, con la EWMA (Unidad 6): una línea, sin entrenar, que rinde
+  como el random forest. Entre dos modelos parecidos, gana el simple.
+- Para contrastar una idea de dirección con estas precauciones, el sistema principal tiene el **filtro de
+  evidencia** (`python -m cryptoquant evidencia`).
+
+## Ejercicios
+
+1. **Otro umbral.** Clasifica "mañana se mueve más de un 3 % en cualquier dirección". ¿Le gana ahora el
+   random forest a la línea base? ¿Por qué tendría sentido?
+2. **Más profundidad.** Un árbol con `maxdepth = 30, minbucket = 1`: compara su acierto en entrenamiento y
+   en prueba.
+3. **ETH.** Repite la sección 4 con ETH.
+4. **La fuga.** Añade `lead(r)` como variable. ¿Qué acierto da? Ese es el número que debe hacerte sospechar.
