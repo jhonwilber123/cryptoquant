@@ -13,6 +13,7 @@ o editorial. Del resto se guarda la referencia verificada.
 Uso (desde la carpeta del proyecto):
     python investigacion/recolectar.py              todo
     python investigacion/recolectar.py --solo libros
+    python investigacion/recolectar.py --solo pdfs  completa los PDFs de la seleccion vigente
     python investigacion/recolectar.py --sin-pdf    solo metadatos
 """
 from __future__ import annotations
@@ -131,7 +132,12 @@ class Web:
 
 
 def norm(s: str) -> str:
-    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    # La puntuacion no ASCII (el guion U+2010 de "Volatility‐Managed", el
+    # apostrofo curvo) separa palabras igual que la ASCII: se cambia por un
+    # espacio antes de quitar tildes, en vez de pegar las dos palabras.
+    s = "".join(" " if ord(c) > 127 and unicodedata.category(c)[0] in "PZS" else c
+                for c in unicodedata.normalize("NFKD", s or ""))
+    s = s.encode("ascii", "ignore").decode().lower()
     s = s.replace("&", " and ")
     s = re.sub(r"^the\s+", "", s)
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
@@ -406,17 +412,150 @@ META_PDF2 = re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']cit
 META_REFRESH = re.compile(r"""http-equiv=["']refresh["'][^>]*url='?([^'">]+)""", re.I)
 DRIVE_ID = re.compile(r"drive\.google\.com/.*?(?:id=|/d/)([\w-]{20,})")
 LINK_PDF = re.compile(r'href=["\']([^"\']+(?:\.pdf|/bitstream/[^"\']+|/download/[^"\']+))["\']', re.I)
+# Revistas OJS: la galerada se enlaza como article/view/<articulo>/<fichero>;
+# el mismo camino con download entrega el fichero.
+OJS_GALERADA = re.compile(r'href=["\']([^"\']+/article/view/\d+/\d+)["\']', re.I)
+MDPI_DOI = re.compile(r"10\.3390/([a-z]+)(\d{1,3})(\d{2})(\d{4})$", re.I)
+# Ficheros de un repositorio de tesis que no son la tesis.
+NO_ES_TESIS = re.compile(r"autoriza|turnitin|similitud|reporte|acta|declaraci|constancia|formulario|"
+                         r"ficha|licencia|^[a-z]_", re.I)
 
 
-def fetch_pdf(web: Web, urls: list[str], dest: Path, max_mb: int = 60) -> str | None:
+def mdpi_pdf(doi: str, revista: str = "") -> list[str]:
+    """URLs del PDF en la CDN de MDPI.
+
+    www.mdpi.com rechaza (403) a todo cliente que no sea un navegador, tambien
+    en sus articulos de acceso abierto; la CDN desde la que sirve esos mismos
+    PDFs no. El DOI codifica revista, volumen, numero y articulo. La carpeta
+    suele llevar el codigo del DOI (jrfm), pero en algunas revistas lleva el
+    nombre (su -> sustainability, info -> information).
+    """
+    m = MDPI_DOI.match(doi or "")
+    if not m:
+        return []
+    vol, art = int(m.group(2)), int(m.group(4))
+    urls = []
+    for rev in dict.fromkeys([m.group(1).lower(), re.sub(r"[^a-z]", "", revista.lower())]):
+        if rev:
+            nombre = f"{rev}-{vol:02d}-{art:05d}"
+            urls.append(f"https://mdpi-res.com/d_attachment/{rev}/{nombre}/article_deploy/{nombre}.pdf")
+    return urls
+
+
+def dspace_bitstreams(web: Web, url: str) -> list[str]:
+    """PDFs de un registro de DSpace 7 a partir de su handle.
+
+    Los repositorios con DSpace 7 (USMP, UNMSM...) sirven una aplicacion
+    JavaScript sin enlaces en el HTML; los ficheros solo se ven por su API.
+    Se descartan autorizaciones y reportes de similitud y se prueba primero el
+    mayor, que es la tesis.
+    """
+    m = re.match(r"(https?://[^/]+)/(?:.*/)?handle/(\d+(?:\.\d+)*/[\w.-]+)", url)
+    if not m:
+        return []
+    host, handle = m.groups()
+    for api in ("/server/api", "/backend/api"):
+        r = web.get(f"{host}{api}/pid/find", params={"id": f"hdl:{handle}"},
+                    headers={"Accept": "application/json"}, intentos=1)
+        if r is None or not r.ok or "json" not in r.headers.get("content-type", ""):
+            continue
+        try:
+            item = r.json()
+            b = web.get(item["_links"]["bundles"]["href"], intentos=2)
+            pdfs = []
+            for bundle in (b.json().get("_embedded") or {}).get("bundles", []):
+                if bundle.get("name") != "ORIGINAL":
+                    continue
+                bs = web.get(bundle["_links"]["bitstreams"]["href"], intentos=2)
+                for f in (bs.json().get("_embedded") or {}).get("bitstreams", []):
+                    if f["name"].lower().endswith(".pdf") and not NO_ES_TESIS.search(f["name"]):
+                        pdfs.append((f.get("sizeBytes") or 0, f["_links"]["content"]["href"]))
+            return [u for _, u in sorted(pdfs, reverse=True)]
+        except (ValueError, KeyError, AttributeError):
+            return []
+    return []
+
+
+def otras_versiones(web: Web, rec: dict) -> list[str]:
+    """Versiones gratuitas que la ficha del articulo no enlaza.
+
+    Semantic Scholar, otras fichas del mismo trabajo en OpenAlex (NBER,
+    repositorios) y arXiv. Suelen ser la version preliminar del autor, que las
+    revistas de pago permiten difundir. Solo se acepta un titulo identico.
+    """
+    urls = []
+    if rec.get("doi"):
+        r = web.get(f"https://api.semanticscholar.org/graph/v1/paper/DOI:{rec['doi']}",
+                    params={"fields": "openAccessPdf,externalIds"}, pause=1.2)
+        if r is not None and r.ok:
+            j = r.json()
+            if (j.get("openAccessPdf") or {}).get("url"):
+                urls.append(j["openAccessPdf"]["url"])
+            if (j.get("externalIds") or {}).get("ArXiv"):
+                urls.append(f"https://arxiv.org/pdf/{j['externalIds']['ArXiv']}")
+    titulo = re.sub(r"[^\w\s-]", " ", rec.get("titulo") or "").strip()
+    if titulo and rec.get("nivel_revista") != "T":
+        # El preprint en SSRN o NBER y la copia del repositorio del autor son
+        # fichas aparte en OpenAlex: se buscan por titulo identico.
+        j = web.openalex("works", {"filter": f"title.search:{titulo}", "per-page": 10,
+                                   "select": "display_name,doi,locations"}, scope=HOY)
+        for w in (j or {}).get("results", []):
+            if norm(w.get("display_name") or "") != norm(rec["titulo"]):
+                continue
+            nber = re.search(r"10\.3386/(w\d+)", w.get("doi") or "")
+            if nber:
+                urls.append(f"https://www.nber.org/system/files/working_papers/{nber.group(1)}/{nber.group(1)}.pdf")
+            urls += [u for loc in w.get("locations") or [] if loc.get("is_oa")
+                     for u in (loc.get("pdf_url"), loc.get("landing_page_url")) if u]
+        r = web.get("http://export.arxiv.org/api/query",
+                    params={"search_query": f'ti:"{titulo}"', "max_results": 5}, pause=3)
+        if r is not None and r.ok:
+            for ident, tit in re.findall(r"<entry>\s*<id>http://arxiv\.org/abs/([^<]+)</id>.*?<title>(.*?)</title>",
+                                         r.text, re.S):
+                if norm(tit) == norm(rec["titulo"]):
+                    urls.append("https://arxiv.org/pdf/" + re.sub(r"v\d+$", "", ident))
+    return [u for i, u in enumerate(urls) if u not in urls[:i]]
+
+
+def pdf_con_titulo(data: bytes, titulo: str) -> bool | None:
+    """Comprueba que el PDF es el trabajo buscado: sus primeras paginas deben
+    contener al menos el 60 % de las palabras del titulo.
+
+    Los enlaces a PDF de una pagina de repositorio no siempre son el articulo
+    (avisos de privacidad, articulos citados). None si no se puede leer el
+    texto: sin pypdf ni PyMuPDF instalados, o un PDF escaneado.
+    """
+    texto = ""
+    try:
+        import pymupdf
+        with pymupdf.open(stream=data, filetype="pdf") as d:
+            texto = " ".join(d[i].get_text() for i in range(min(5, d.page_count)))
+    except ImportError:
+        try:
+            import io
+            import pypdf
+            texto = " ".join((p.extract_text() or "") for p in pypdf.PdfReader(io.BytesIO(data)).pages[:5])
+        except Exception:                          # sin pypdf, o PDF ilegible
+            return None
+    except Exception:
+        return None
+    texto = norm(texto)
+    palabras = [w for w in norm(titulo).split() if len(w) >= 4]
+    if len(texto) < 200 or not palabras:
+        return None
+    return sum(w in texto for w in palabras) / len(palabras) >= 0.6
+
+
+def fetch_pdf(web: Web, urls: list[str], dest: Path, max_mb: int = 60, titulo: str = "") -> str | None:
     """Prueba cada URL; si es una pagina, busca el enlace al PDF dentro.
 
     Devuelve la URL de la que salio el PDF, o None. Se comprueba la firma
     %PDF: muchas editoriales devuelven una pagina de acceso con codigo 200.
+    Con `titulo`, se descarta el PDF que no lo contenga.
     """
     vistos: set[str] = set()
     cola = list(urls)
-    while cola and len(vistos) < 8:
+    while cola and len(vistos) < 12:
         u = cola.pop(0)
         # Google Drive muestra un aviso antes de los ficheros grandes; el
         # enlace directo lo salta. Lo usan los autores de ESL, ISLP y CASI.
@@ -430,14 +569,21 @@ def fetch_pdf(web: Web, urls: list[str], dest: Path, max_mb: int = 60) -> str | 
         if r is None or not r.ok:
             continue
         ctype = r.headers.get("content-type", "").lower()
-        first = next(r.iter_content(8), b"") if "html" not in ctype else b""
+        # Un solo iterador para toda la respuesta: si se abre uno para mirar la
+        # firma y otro para el resto, al cerrarse el primero urllib3 corta las
+        # respuestas por trozos (chunked) y solo quedan esos primeros bytes.
+        trozos = r.iter_content(1 << 16) if "html" not in ctype else iter(())
+        first = next(trozos, b"")
         if first.startswith(b"%PDF"):
             data = bytearray(first)
-            for chunk in r.iter_content(1 << 16):
+            for chunk in trozos:
                 data.extend(chunk)
                 if len(data) > max_mb * (1 << 20):
                     return None
             if len(data) < 20_000:
+                continue
+            if titulo and pdf_con_titulo(bytes(data), titulo) is False:
+                web.log(f"    descartado (no es el trabajo buscado): {u[:90]}")
                 continue
             tmp = dest.with_name(dest.name + ".tmp")
             tmp.write_bytes(bytes(data))
@@ -446,9 +592,12 @@ def fetch_pdf(web: Web, urls: list[str], dest: Path, max_mb: int = 60) -> str | 
         if "html" in ctype:
             text = r.text[:400_000]
             found = (META_REFRESH.findall(text) + META_PDF.findall(text) + META_PDF2.findall(text)
-                     + LINK_PDF.findall(text))
+                     + LINK_PDF.findall(text)
+                     + [g.replace("/article/view/", "/article/download/") for g in OJS_GALERADA.findall(text)])
             for f in found[:5]:
                 cola.append(urljoin(r.url, html.unescape(f)))
+            if not found and "/handle/" in r.url:
+                cola.extend(dspace_bitstreams(web, r.url)[:3])
     return None
 
 
@@ -725,7 +874,56 @@ def select(records: list[dict], prot: dict) -> list[dict]:
 # ==========================================================================
 COLUMNAS = ["nivel", "eje", "rango", "anio", "autores", "titulo", "revista", "volumen", "numero",
             "paginas", "tipo", "nivel_revista", "fwci", "citas", "doi", "url", "acceso_abierto",
-            "pdf", "afiliaciones_peru", "pertinencia", "fuente", "consulta", "cita_apa", "resumen"]
+            "pdf", "pdf_origen", "afiliaciones_peru", "pertinencia", "fuente", "consulta", "cita_apa",
+            "resumen"]
+
+
+def apellido_y_nombre(rec: dict) -> tuple[str, str]:
+    """Apellido del primer autor y nombre del PDF (<anio>_<apellido>_<titulo>)."""
+    pa = rec.get("primer_autor") or ""
+    apellido = safe_name(re.split(r"[,;]", pa)[0].split()[-1] if pa else "anon", 20)
+    return apellido, f"{rec['anio']}_{apellido}_{safe_name(rec['titulo'], 60)}"
+
+
+def colocar_pdf(web: Web, rec: dict, sin_pdf: bool) -> None:
+    """Deja en rec["pdf"] la ruta del PDF, descargandolo si hace falta.
+
+    Primero los enlaces de acceso abierto de la base de datos; si ninguno
+    sirve, otras versiones gratuitas (preliminares del autor). rec["pdf_origen"]
+    guarda de donde salio, para saber si es la version publicada.
+    """
+    ant = BASE / "antecedentes"
+    _, stem = apellido_y_nombre(rec)
+    dest = ant / rec["nivel"] / f"{stem}.pdf"
+    apartado = ant / "_fuera_de_seleccion" / rec["nivel"] / f"{stem}.pdf"
+    if not dest.exists() and apartado.exists():
+        apartado.replace(dest)                     # vuelve a estar seleccionado
+    rec["pdf"] = ""
+    if not dest.exists() and not sin_pdf:
+        cand = list(rec.get("_pdfs") or [])
+        extra = mdpi_pdf(rec["doi"], rec.get("revista", ""))
+        if rec["doi"] and rec.get("acceso_abierto") != "closed":
+            extra.append(f"https://doi.org/{rec['doi']}")
+        cand += [u for u in extra if u and u not in cand]
+        origen = (fetch_pdf(web, cand, dest, titulo=rec["titulo"]) if cand else None) or \
+            fetch_pdf(web, otras_versiones(web, rec), dest, titulo=rec["titulo"])
+        if origen:
+            rec["pdf_origen"] = origen
+    if dest.exists():
+        rec["pdf"] = str(dest.relative_to(BASE)).replace("\\", "/")
+
+
+def apartar_pdfs(sel: list[dict]) -> None:
+    """PDFs de ejecuciones anteriores que ya no estan en la seleccion: se
+    apartan, no se borran (alguien puede estar leyendolos)."""
+    ant = BASE / "antecedentes"
+    vigentes = {rec["pdf"] for rec in sel if rec["pdf"]}
+    for n in NIVELES:
+        for f in (ant / n).glob("*.pdf"):
+            if str(f.relative_to(BASE)).replace("\\", "/") not in vigentes:
+                destino = ant / "_fuera_de_seleccion" / n / f.name
+                destino.parent.mkdir(parents=True, exist_ok=True)
+                f.replace(destino)
 
 
 def write_outputs(sel: list[dict], libros: list[dict], prisma: dict, prot: dict,
@@ -741,22 +939,12 @@ def write_outputs(sel: list[dict], libros: list[dict], prisma: dict, prot: dict,
         g = (rec["nivel"], rec["eje"])
         grupos[g] = grupos.get(g, 0) + 1
         rec["rango"] = grupos[g]
-        apellido = safe_name(re.split(r"[,;]", rec["primer_autor"] or "anon")[0].split()[-1] if rec["primer_autor"] else "anon", 20)
-        stem = f"{rec['anio']}_{apellido}_{safe_name(rec['titulo'], 60)}"
+        apellido, _ = apellido_y_nombre(rec)
         key = f"{apellido}{rec['anio']}"
         contador[key] = contador.get(key, 0) + 1
         if contador[key] > 1:
             key += "abcdefghijklmnopqrstuvwxyz"[contador[key] - 2]
-        rec["pdf"] = ""
-        dest = ant / rec["nivel"] / f"{stem}.pdf"
-        apartado = ant / "_fuera_de_seleccion" / rec["nivel"] / f"{stem}.pdf"
-        if not dest.exists() and apartado.exists():
-            apartado.replace(dest)                 # vuelve a estar seleccionado
-        if dest.exists():
-            rec["pdf"] = str(dest.relative_to(BASE)).replace("\\", "/")
-        elif not sin_pdf and rec["_pdfs"]:
-            if fetch_pdf(web, rec["_pdfs"], dest):
-                rec["pdf"] = str(dest.relative_to(BASE)).replace("\\", "/")
+        colocar_pdf(web, rec, sin_pdf)
         if rec["doi"]:
             bt = fetch_reference(web, rec["doi"], "application/x-bibtex")
             apa = fetch_reference(web, rec["doi"], "text/x-bibliography; style=apa")
@@ -770,53 +958,10 @@ def write_outputs(sel: list[dict], libros: list[dict], prisma: dict, prot: dict,
         log(f"  {rec['nivel'][:5]} {rec['eje'] or '-':3s} {rec['anio']} {rec['nivel_revista']} "
             f"{'PDF' if rec['pdf'] else '   '} {rec['titulo'][:70]}")
 
-    with open(ant / "matriz_antecedentes.csv", "w", encoding="utf-8-sig", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=COLUMNAS, extrasaction="ignore")
-        w.writeheader()
-        for rec in sel:
-            w.writerow(rec)
+    escribir_matriz(sel)
     (BASE / "referencias.bib").write_text("\n\n".join(bib) + "\n", encoding="utf-8")
-
-    # PDFs de ejecuciones anteriores que ya no estan en la seleccion: se
-    # apartan, no se borran (alguien puede estar leyendolos).
-    vigentes = {rec["pdf"] for rec in sel if rec["pdf"]}
-    for n in NIVELES:
-        for f in (ant / n).glob("*.pdf"):
-            if str(f.relative_to(BASE)).replace("\\", "/") not in vigentes:
-                destino = ant / "_fuera_de_seleccion" / n / f.name
-                destino.parent.mkdir(parents=True, exist_ok=True)
-                f.replace(destino)
-
-    # Version legible.
-    L = ["# Antecedentes", "",
-         f"Generado el {run_info['fecha']} con `recolectar.py` (protocolo `{run_info['protocolo_hash']}`).",
-         "Cada referencia sale de una base de datos (OpenAlex, Crossref o ALICIA); ninguna se escribio de memoria.",
-         "La matriz completa, con resumenes, esta en `matriz_antecedentes.csv` (se abre con Excel).", ""]
-    if prisma.get("openalex") != "completo":
-        L += ["> **Seleccion incompleta:** OpenAlex agoto su presupuesto diario gratuito durante esta "
-              "ejecucion. Los niveles nacional y local desde ALICIA estan completos; lo que depende de "
-              "OpenAlex se completa en la siguiente ejecucion (la tarea programada la repite).", ""]
-    L += [
-         "Nivel de revista: **A** referencia del area (FT50 y equivalentes) · **B** nucleo cientifico "
-         "internacional · **C** otra revista indexada · **T** tesis (complemento).", ""]
-    for n in NIVELES:
-        items = [r for r in sel if r["nivel"] == n]
-        L += [f"## {n.capitalize()} ({len(items)})", ""]
-        if not items:
-            L += ["_Sin resultados que cumplan el protocolo._", ""]
-            continue
-        ejes = [e for e in prot["ejes"]] + [""]
-        for e in ejes:
-            sub = [r for r in items if r["eje"] == e]
-            if not sub:
-                continue
-            if e:
-                L += [f"### {e}. {prot['ejes'][e]['nombre']}", f"_Modulo del prototipo: {prot['ejes'][e]['modulo']}_", ""]
-            for r in sub:
-                pdf = f" · [PDF]({r['pdf'].split('/', 1)[1]})" if r["pdf"] else ""
-                L.append(f"{r['rango']}. **[{r['nivel_revista']}]** {r['cita_apa']}{pdf}")
-            L.append("")
-    (ant / "README.md").write_text("\n".join(L), encoding="utf-8")
+    apartar_pdfs(sel)
+    escribir_readme(sel, prot, run_info, prisma.get("openalex") == "completo")
 
     # Libros.
     lb = BASE / "libros"
@@ -859,10 +1004,102 @@ def write_outputs(sel: list[dict], libros: list[dict], prisma: dict, prot: dict,
     return run_info
 
 
+def escribir_matriz(sel: list[dict]) -> None:
+    with open(BASE / "antecedentes" / "matriz_antecedentes.csv", "w", encoding="utf-8-sig", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=COLUMNAS, extrasaction="ignore")
+        w.writeheader()
+        for rec in sel:
+            w.writerow(rec)
+
+
+def escribir_readme(sel: list[dict], prot: dict, run_info: dict, completo: bool,
+                    pdfs_completados: str = "") -> None:
+    """Version legible de la matriz, por nivel y eje, con enlace a cada PDF."""
+    ant = BASE / "antecedentes"
+    L = ["# Antecedentes", "",
+         f"Generado el {run_info['fecha']} con `recolectar.py` (protocolo `{run_info['protocolo_hash']}`).",
+         "Cada referencia sale de una base de datos (OpenAlex, Crossref o ALICIA); ninguna se escribio de memoria.",
+         "La matriz completa, con resumenes, esta en `matriz_antecedentes.csv` (se abre con Excel)."]
+    if pdfs_completados:
+        L.append(f"PDFs completados el {pdfs_completados} (`recolectar.py --solo pdfs`): "
+                 f"{sum(bool(r['pdf']) for r in sel)} de {len(sel)} antecedentes tienen PDF.")
+    L.append("")
+    if not completo:
+        L += ["> **Seleccion incompleta:** OpenAlex agoto su presupuesto diario gratuito durante esta "
+              "ejecucion. Los niveles nacional y local desde ALICIA estan completos; lo que depende de "
+              "OpenAlex se completa en la siguiente ejecucion (la tarea programada la repite).", ""]
+    L += [
+         "Nivel de revista: **A** referencia del area (FT50 y equivalentes) · **B** nucleo cientifico "
+         "internacional · **C** otra revista indexada · **T** tesis (complemento).", ""]
+    for n in NIVELES:
+        items = [r for r in sel if r["nivel"] == n]
+        L += [f"## {n.capitalize()} ({len(items)})", ""]
+        if not items:
+            L += ["_Sin resultados que cumplan el protocolo._", ""]
+            continue
+        ejes = [e for e in prot["ejes"]] + [""]
+        for e in ejes:
+            sub = [r for r in items if r["eje"] == e]
+            if not sub:
+                continue
+            if e:
+                L += [f"### {e}. {prot['ejes'][e]['nombre']}", f"_Modulo del prototipo: {prot['ejes'][e]['modulo']}_", ""]
+            for r in sub:
+                pdf = f" · [PDF]({r['pdf'].split('/', 1)[1]})" if r["pdf"] else ""
+                L.append(f"{r['rango']}. **[{r['nivel_revista']}]** {r['cita_apa']}{pdf}")
+            L.append("")
+    (ant / "README.md").write_text("\n".join(L), encoding="utf-8")
+
+
+def completar_pdfs(web: Web, prot: dict, log) -> int:
+    """Descarga los PDFs que faltan de la seleccion vigente, sin repetir la busqueda.
+
+    Una busqueda nueva puede cambiar la seleccion, y con ella los antecedentes
+    que ya cita el proyecto de tesis. Aqui la matriz no cambia: solo se
+    rellenan sus PDFs.
+    """
+    ant = BASE / "antecedentes"
+    with open(ant / "matriz_antecedentes.csv", encoding="utf-8-sig", newline="") as fh:
+        sel = list(csv.DictReader(fh))
+    for r in sel:
+        r["primer_autor"] = r["autores"].split(";")[0].strip()
+    run_info = {"fecha": "?", "protocolo_hash": "?", "prisma": {}}
+    for p in sorted(BASE.glob("busquedas/*/ejecucion.json"), reverse=True):
+        j = json.loads(p.read_text(encoding="utf-8"))
+        if "prisma" in j:                          # la ejecucion que produjo la matriz
+            run_info = j
+            break
+
+    faltan = [r for r in sel if not (r["pdf"] and (BASE / r["pdf"]).exists())]
+    log(f"Matriz del {run_info['fecha']}: {len(sel)} antecedentes, {len(faltan)} sin PDF.")
+    # Enlaces de acceso abierto actuales: pedirlos por DOI cuesta poco presupuesto.
+    dois = [r["doi"].lower() for r in faltan if r["doi"] and r["fuente"] == "OpenAlex"]
+    enlaces: dict[str, list[str]] = {}
+    for i in range(0, len(dois), 40):
+        for w in openalex_works(web, "doi:" + "|".join(dois[i:i + 40]), 50,
+                                select="id,doi,locations,best_oa_location,open_access"):
+            enlaces[(w.get("doi") or "").replace("https://doi.org/", "").lower()] = pdf_candidates(w)
+
+    for r in faltan:
+        r["_pdfs"] = enlaces.get(r["doi"].lower()) or ([r["url"]] if r["url"] else [])
+        colocar_pdf(web, r, sin_pdf=False)
+        log(f"  {r['nivel'][:5]} {r['anio']} {r['nivel_revista']} {'PDF' if r['pdf'] else '   '} "
+            f"{r['titulo'][:70]}" + (f"  <- {r['pdf_origen'][:60]}" if r["pdf"] and r.get("pdf_origen") else ""))
+
+    escribir_matriz(sel)
+    apartar_pdfs(sel)
+    escribir_readme(sel, prot, run_info, run_info["prisma"].get("openalex", "completo") == "completo",
+                    pdfs_completados=HOY)
+    con = sum(bool(r["pdf"]) for r in sel)
+    log(f"\nPDFs: {con} de {len(sel)} ({con - (len(sel) - len(faltan))} nuevos). "
+        f"Los que faltan no tienen version gratuita localizable: biblioteca o pedirlos al autor.")
+    return 0
+
+
 # ==========================================================================
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--solo", choices=["libros", "antecedentes"])
+    ap.add_argument("--solo", choices=["libros", "antecedentes", "pdfs"])
     ap.add_argument("--sin-pdf", action="store_true", help="no descargar PDFs")
     args = ap.parse_args(argv)
     try:
@@ -895,6 +1132,8 @@ def main(argv=None) -> int:
 
 
 def run(args, prot, prot_text, libros_cfg, web, run_info, raw, log) -> int:
+    if args.solo == "pdfs":
+        return completar_pdfs(web, prot, log)
     libros = []
     if args.solo != "antecedentes":
         log("\nLibros")

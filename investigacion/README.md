@@ -89,6 +89,13 @@ C:\Users\ADMIN\.venvs\cryptoquant\Scripts\python.exe investigacion\recolectar.py
 
 - **Por pasos:** `--sin-pdf` actualiza solo los metadatos, que es rápido; sin esa opción descarga
   también los PDFs. Los PDFs que ya están no se vuelven a descargar.
+- **Solo los PDFs que faltan:** `--solo pdfs` los busca para la selección vigente sin repetir la
+  búsqueda, así que no cambia los antecedentes que ya cita el proyecto de tesis. Además de los
+  enlaces de OpenAlex, prueba la CDN de MDPI, la API de los repositorios DSpace 7 (USMP, UNMSM),
+  las galeradas de las revistas OJS y versiones de los autores (NBER, arXiv, repositorios).
+- **Cada PDF se verifica:** antes de guardarlo se comprueba que sus primeras páginas contienen el
+  título del trabajo, porque las páginas de repositorio enlazan a veces otros PDFs (avisos de
+  privacidad, artículos citados). Necesita PyMuPDF o pypdf; sin ninguno, no se verifica.
 - **Cada ejecución queda fechada** en `busquedas/`, con la huella del protocolo. Si cambias
   `protocolo.yaml`, la huella cambia, y así queda constancia de qué criterios produjeron cada
   selección.

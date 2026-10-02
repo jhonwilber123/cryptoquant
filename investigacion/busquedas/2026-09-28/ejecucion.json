@@ -1,0 +1,53 @@
+{
+  "fecha": "2026-09-28",
+  "inicio_utc": "2026-09-28T14:00:00+00:00",
+  "protocolo_hash": "5ab59be399fd",
+  "prisma": {
+    "identificados": 930,
+    "duplicados": 79,
+    "fuera_de_criterio": 0,
+    "openalex": "completo",
+    "incluidos": 85,
+    "por_nivel": {
+      "internacional": 40,
+      "nacional": 30,
+      "local": 15
+    },
+    "con_pdf": 26
+  },
+  "revistas_nivel_a_identificadas": {
+    "https://openalex.org/S5353659": "The Journal of Finance",
+    "https://openalex.org/S149240962": "Journal of Financial Economics",
+    "https://openalex.org/S170137484": "Review of Financial Studies",
+    "https://openalex.org/S193228710": "Journal of Financial and Quantitative Analysis",
+    "https://openalex.org/S131117787": "Review of Finance",
+    "https://openalex.org/S33323087": "Management Science",
+    "https://openalex.org/S2735409286": "The Review of Asset Pricing Studies",
+    "https://openalex.org/S95464858": "Econometrica",
+    "https://openalex.org/S23254222": "American Economic Review",
+    "https://openalex.org/S203860005": "The Quarterly Journal of Economics",
+    "https://openalex.org/S95323914": "Journal of Political Economy",
+    "https://openalex.org/S88935262": "The Review of Economic Studies",
+    "https://openalex.org/S127708089": "Journal of Economic Literature",
+    "https://openalex.org/S72880728": "The Journal of Economic Perspectives",
+    "https://openalex.org/S4210173904": "Brookings Papers on Economic Activity",
+    "https://openalex.org/S4210170931": "Annual Review of Financial Economics",
+    "https://openalex.org/S127742747": "Journal of Econometrics",
+    "https://openalex.org/S18095783": "Journal of Business and Economic Statistics",
+    "https://openalex.org/S207154782": "Journal of Financial Econometrics",
+    "https://openalex.org/S85739584": "Journal of Applied Econometrics",
+    "https://openalex.org/S180061323": "The Review of Economics and Statistics",
+    "https://openalex.org/S4394736638": "Journal of the American Statistical Association",
+    "https://openalex.org/S145009937": "Journal of the Royal Statistical Society Series B (Statistical Methodology)",
+    "https://openalex.org/S119757635": "The Annals of Statistics",
+    "https://openalex.org/S39841227": "International Journal of Forecasting",
+    "https://openalex.org/S182689569": "Quantitative Finance",
+    "https://openalex.org/S133335107": "Mathematical Finance",
+    "https://openalex.org/S6711363": "Journal of Monetary Economics",
+    "https://openalex.org/S2876017": "Journal of Banking & Finance",
+    "https://openalex.org/S145875555": "Journal of Empirical Finance",
+    "https://openalex.org/S127646213": "Journal of Financial Markets",
+    "https://openalex.org/S44585919": "Journal of Economic Dynamics and Control",
+    "https://openalex.org/S103321696": "European Journal of Operational Research"
+  }
+}
