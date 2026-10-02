@@ -1,0 +1,49 @@
+# El piloto en un servidor: la app (Streamlit) detras de Caddy, que pone el HTTPS.
+# Lo arranca scripts/desplegar.ps1 (ver deploy/LEEME.md) con las variables de
+# /opt/piloto/piloto.env:
+#   PILOTO_DOMINIO     la direccion publica (p. ej. 203-0-113-10.sslip.io)
+#   PILOTO_CLAVE_HASH  la derivada de la contraseña (python -m cryptoquant piloto --crear-clave)
+name: piloto
+
+x-registro: &registro          # que los registros no llenen el disco con los meses
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: piloto-app
+    restart: unless-stopped
+    environment:
+      PILOTO_CLAVE_HASH: ${PILOTO_CLAVE_HASH:-}
+    volumes:
+      - datos:/datos           # la cartera: sobrevive a reinicios y a cada despliegue
+    logging: *registro
+    # Sin "ports": a la app solo se llega a traves de Caddy.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PILOTO_DOMINIO: ${PILOTO_DOMINIO:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_datos:/data      # los certificados: no se piden de nuevo en cada despliegue
+      - caddy_config:/config
+    logging: *registro
+
+volumes:
+  datos:
+  caddy_datos:
+  caddy_config:

@@ -50,14 +50,27 @@ Lee el CSV que exporta Python. Si no existe, lo descarga él mismo de Binance.
 `riesgo.Rmd` es el contraste en R del módulo de riesgo: tras
 `python -m cryptoquant riesgo`, recalcula desde cero las pruebas de Kupiec y
 Christoffersen sobre los VaR pronosticados y comprueba que coinciden.
+
+`tesis.R` es la réplica de la tesis: tras `python -m cryptoquant tesis`,
+`Rscript tesis.R` desde `r/` recalcula las 21 variables de los ocho activos y
+las pruebas del VaR, y deja la comparación en `reports/tesis/contraste_r_*.csv`.
+Compara con la última corrida de `tesis`, así que hay que repetirlo cada vez
+que se repite esta.
+
 Sin RStudio: `Rscript -e "rmarkdown::render('laboratorio.Rmd')"` desde `r/`.
+Necesita pandoc. R no encuentra por su cuenta el que trae RStudio: hay que
+indicarle su carpeta en la variable `RSTUDIO_PANDOC`. En Windows, el instalador
+de R tampoco añade `Rscript` al PATH.
 
 ## Las dos versiones dan las mismas cifras
 
 Los indicadores de R replican las fórmulas de pandas, incluidas las medias
 exponenciales ajustadas del RSI. La sección 3 del R Markdown compara las 21
 variables con las de Python: la diferencia máxima es de 10⁻⁸ sobre precios
-de 10⁵, es decir, redondeo. Las señales coinciden al decimal. El GARCH se
+de 10⁵, es decir, redondeo. Las señales coinciden al decimal. La réplica de la
+tesis llega a lo mismo en ocho activos: con R 4.6.1, una diferencia relativa
+máxima de 1,3 × 10⁻¹⁰ en las variables, y las mismas excepciones y veredictos
+del VaR en sus 24 combinaciones. El GARCH se
 estima con optimizadores distintos (`arch` frente a `rugarch`) y los
 parámetros difieren en la tercera cifra.
 

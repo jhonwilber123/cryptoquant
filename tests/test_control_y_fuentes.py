@@ -74,6 +74,37 @@ def _zip(lineas: list[str]) -> bytes:
     return b.getvalue()
 
 
+def test_a_principios_de_mes_los_dias_del_mes_pasado_salen_de_los_diarios(monkeypatch):
+    """El 1 de octubre aun no hay archivo mensual de septiembre: sus dias, de los diarios."""
+    fila = "{t},100,110,90,105,7,0,0,0,0,0,0"
+
+    def dias(desde, hasta):
+        return _zip([fila.format(t=d.value // 10**6)
+                     for d in pd.date_range(desde, hasta, freq="D", tz="UTC")])
+
+    pedidos = []
+
+    def bajar(url):
+        pedidos.append(url)
+        nombre = url.rsplit("/", 1)[1].removesuffix(".zip")       # BTCUSDT-1d-2026-08(-01)
+        fecha = nombre.split("-1d-")[1]
+        if "/monthly/" in url:
+            mes = pd.Period(fecha, "M")
+            return dias(mes.start_time, mes.end_time.normalize()) if mes <= pd.Period("2026-08", "M") else None
+        return dias(fecha, fecha)
+
+    monkeypatch.setattr(datos, "_bajar", bajar)
+    df = datos.descargar_archivos("BTC", "1d", "2026-07-01", hoy=pd.Timestamp("2026-10-01 05:00", tz="UTC"))
+    assert df.index[-1] == pd.Timestamp("2026-09-30", tz="UTC")
+    assert len(df) == 31 + 31 + 30 and df.index.is_unique
+    assert sum("/daily/" in u for u in pedidos) == 30                # solo los de septiembre
+
+    pedidos.clear()   # a mitad de mes: el mensual del mes pasado ya existe; diarios, solo los de este
+    df = datos.descargar_archivos("BTC", "1d", "2026-07-01", hoy=pd.Timestamp("2026-09-15 05:00", tz="UTC"))
+    assert df.index[-1] == pd.Timestamp("2026-09-14", tz="UTC")
+    assert sum("/daily/" in u for u in pedidos) == 14
+
+
 def test_archivos_en_milisegundos_y_microsegundos():
     fila = "{t},100,110,90,105,7,0,0,0,0,0,0"
     ms = pd.Timestamp("2024-12-31", tz="UTC").value // 10**6

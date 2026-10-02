@@ -201,6 +201,26 @@ def test_guardar(app):
     assert len(at.tabs) == 5 and at.dataframe  # el diario ya muestra su foto
 
 
+def test_guardar_aunque_el_plan_no_se_pueda_calcular(app):
+    """Sin red (o con una moneda sin historia) el plan falla, pero lo anotado se guarda.
+
+    Antes el guardado iba despues del calculo: si este fallaba, la app cortaba
+    antes de llegar y el boton se perdia sin aviso.
+    """
+    at = app(CARTERA)
+    app.estado["fallo"] = ValueError("sin conexion")
+    st.cache_data.clear()
+    at.radio[0].set_value("Moderado")
+    _boton(at, "Guardar").click().run()
+    _sin_fallos(at)
+    guardada = json.loads((app.dir / "cartera.json").read_text(encoding="utf-8"))
+    assert guardada["ajustes"]["objetivo"] == 0.25
+    assert "guardados" in _textos(at.toast)
+    assert "sin conexion" in _textos(at.error)
+    lineas = (app.dir / "fotos.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lineas) == 1 and json.loads(lineas[0])["tenencias"] == CARTERA
+
+
 def test_validar_con_los_4_metodos(app):
     at = app(CARTERA)
     _boton(at, "Comprobar el mal día").click().run()
@@ -270,3 +290,41 @@ def test_ajustes_guardados_raros(app):
     at = app(CARTERA, {"freno_ventana": 3000, "banda": 0.5, "minimo_orden": 50_000})
     _sin_fallos(at)
     assert not at.error
+
+
+# --------------------------------------------------------------------------
+# Publicado en un servidor: nada de la cartera sin la contraseña
+# --------------------------------------------------------------------------
+def test_en_un_servidor_nada_se_ve_sin_la_contrasena(app, monkeypatch):
+    from cryptoquant.piloto import acceso
+
+    monkeypatch.setattr(acceso, "ESPERA_TRAS_FALLO", 0.0)
+    monkeypatch.setenv("PILOTO_EXIGIR_CLAVE", "1")
+    monkeypatch.setenv("PILOTO_CLAVE_HASH", acceso.crear("la contraseña del servidor", iteraciones=1000))
+    at = app(CARTERA)
+    assert not at.exception
+    assert [t.label for t in at.text_input] == ["Contraseña"]
+    assert not at.metric and not at.tabs and not at.dataframe
+    assert not at.sidebar.header   # ni siquiera la barra lateral con la cartera
+
+    at.text_input[0].input("una contraseña cualquiera")
+    at.button[0].click().run()
+    assert "Contraseña incorrecta" in _textos(at.error)
+    assert not at.metric
+
+    at.text_input[0].input("la contraseña del servidor")
+    at.button[0].click().run()
+    _sin_fallos(at)
+    assert any(m.label == "Valor de la cartera" for m in at.metric)
+    assert "Su cartera" in [h.value for h in at.sidebar.header]
+    at.run()   # la sesion queda abierta: no vuelve a pedirla
+    assert not at.text_input and any(m.label == "Valor de la cartera" for m in at.metric)
+
+
+def test_un_servidor_sin_contrasena_no_abre_la_app(app, monkeypatch):
+    monkeypatch.setenv("PILOTO_EXIGIR_CLAVE", "1")
+    monkeypatch.delenv("PILOTO_CLAVE_HASH", raising=False)
+    at = app(CARTERA)
+    assert not at.exception
+    assert "no tiene contraseña" in _textos(at.error)
+    assert not at.metric and not at.text_input

@@ -1,0 +1,13 @@
+# Prueba en el PC con Docker Desktop: solo la app, en http://127.0.0.1:8501,
+# sin Caddy y sin contraseña (no sale de este equipo). Desde la raiz del proyecto:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
+# La cartera de esta prueba vive en el volumen de Docker, no en data/piloto.
+services:
+  app:
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      PILOTO_EXIGIR_CLAVE: "0"
+
+  caddy:
+    profiles: ["servidor"]     # en el PC no arranca

@@ -1,0 +1,20 @@
+# Entorno exacto con el que se generaron los resultados de la tesis
+# (python -m cryptoquant tesis, huella f94f1571d68a, Python 3.11.8, 01-10-2026).
+# Es el mismo entorno del experimento prospectivo (C:\Users\ADMIN\.venvs\cryptoquant),
+# asi que la evidencia retrospectiva y la prospectiva salen del mismo modelo.
+# El aprendizaje automatico decide distinto con otras versiones: con Python 3.12.6
+# y scikit-learn 1.8.0 la huella fue 0174c3974dbf (reports/tesis/referencia_entorno_2026-09-26).
+# Para reproducir las cifras, instalar estas con Python 3.11.8 y no las de requirements.txt.
+arch==8.0.0
+ccxt==4.5.78
+joblib==1.6.0
+matplotlib==3.11.1
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==25.0.1
+PyYAML==6.0.3
+requests==2.34.2
+scikit-learn==1.9.0
+scipy==1.17.1
+statsmodels==0.15.0
+threadpoolctl==3.6.0

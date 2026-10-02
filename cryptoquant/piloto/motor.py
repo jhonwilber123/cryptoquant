@@ -281,7 +281,7 @@ def decidir(tenencias: dict[str, float], precios: dict[str, float], cierres: pd.
     ordenes = pd.DataFrame({"precio": precio, "unidades": unidades, "unidades_objetivo": objetivo_u,
                             "diferencia": objetivo_u - unidades, "importe": importe})
     posible = actuar & (ordenes["importe"].abs() >= aj.minimo_orden)
-    ordenes["importe_orden"] = _al_efectivo(importe, posible, efectivo, aj.minimo_orden)
+    ordenes["importe_orden"] = _al_efectivo(importe, posible, efectivo, aj.minimo_orden, aj.coste)
     ordenes["cantidad_orden"] = ordenes["importe_orden"] / precio
     ordenes["ejecutar"] = ordenes["importe_orden"] != 0
     ordenes["recortada"] = posible & (importe > 0) & (ordenes["importe_orden"] < importe * (1 - 1e-9))
@@ -312,22 +312,26 @@ def decidir(tenencias: dict[str, float], precios: dict[str, float], cierres: pd.
                 lr.index[-1])
 
 
-def _al_efectivo(importe: pd.Series, posible: pd.Series, efectivo: float, minimo: float) -> pd.Series:
+def _al_efectivo(importe: pd.Series, posible: pd.Series, efectivo: float, minimo: float,
+                 coste: float = 0.0) -> pd.Series:
     """Importe de cada orden que se puede ejecutar de verdad (0 = no se ensena).
 
-    Las compras se pagan con el efectivo y con las ventas que SI se hacen. Si
-    una venta queda por debajo del minimo de Binance no se ejecuta, y la
-    compra que pagaba se recorta a lo que hay; si al recortarla queda por
-    debajo del minimo, tampoco se ensena.
+    Las compras se pagan con el efectivo y con lo que dejan las ventas que SI
+    se hacen, descontado su coste: vender 100 USDT de una moneda no deja 100
+    para comprar otra. Si una venta queda por debajo del minimo de Binance no
+    se ejecuta, y la compra que pagaba se recorta a lo que hay; si al
+    recortarla queda por debajo del minimo, tampoco se ensena, y su parte del
+    efectivo vuelve a las demas compras.
     """
     orden = importe.where(posible, 0.0)
-    disponible = efectivo - float(orden[orden < 0].sum())
+    disponible = efectivo - float(orden[orden < 0].sum()) * (1 - coste)
     compras = posible & (importe > 0)
     while compras.any():
         pedido = float(importe[compras].sum())
-        if pedido <= disponible * (1 + 1e-9):
-            break
-        orden[compras] = importe[compras] * (disponible / pedido)
+        # Siempre desde el plan, no desde el recorte anterior: si no, al
+        # descartar una compra pequena las demas se quedarian recortadas
+        # aunque ya hubiera efectivo para hacerlas enteras.
+        orden[compras] = importe[compras] * min(1.0, disponible / pedido)
         pocas = compras & (orden < minimo)
         if not pocas.any():
             break

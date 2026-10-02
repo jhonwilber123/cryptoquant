@@ -6,6 +6,7 @@ Se abre con `python -m cryptoquant piloto`. El calculo esta en `sesion` y
 from __future__ import annotations
 
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from cryptoquant.laboratorio import control  # noqa: E402
-from cryptoquant.piloto import diario, mercado, motor, sesion  # noqa: E402
+from cryptoquant.piloto import acceso, diario, mercado, motor, sesion  # noqa: E402
 from cryptoquant.piloto.vista import cantidad, fecha, leer_tabla, num, pct, precio, usdt  # noqa: E402
 from cryptoquant.riesgo import cartera as rc  # noqa: E402
 from cryptoquant.riesgo.cartera import EFECTIVO  # noqa: E402
@@ -84,6 +85,34 @@ def lineas(ancho: pd.DataFrame, titulo_y: str, formato: str, log: bool = False,
 
 # --------------------------------------------------------------------------
 st.set_page_config(page_title="Piloto de riesgo", page_icon=":material/shield:", layout="wide")
+
+
+def pedir_clave() -> None:
+    """En un servidor no se muestra nada sin la contraseña (ver acceso.py); en su equipo no se pide."""
+    guardada, exigir = acceso.configuracion()
+    if guardada is None:
+        if exigir:
+            st.error("Este servidor no tiene contraseña, y sin ella la app no se abre. Fíjela con "
+                     "`scripts\\desplegar.ps1 -Clave` y vuelva a cargar la página.")
+            st.stop()
+        return
+    if st.session_state.get("acceso_concedido"):
+        return
+    st.title("Piloto de riesgo")
+    with st.form("formulario_acceso"):
+        clave = st.text_input("Contraseña", type="password")
+        entrar = st.form_submit_button("Entrar", type="primary")
+    if entrar:
+        if acceso.comprobar(clave, guardada):
+            st.session_state["acceso_concedido"] = True
+            st.rerun()
+        print("piloto: contraseña incorrecta", file=sys.stderr, flush=True)
+        time.sleep(acceso.ESPERA_TRAS_FALLO)
+        st.error("Contraseña incorrecta.")
+    st.stop()
+
+
+pedir_clave()
 
 guardada, aviso_cartera = diario.leer_cartera()
 fotos, avisos_fotos = diario.leer_fotos()
@@ -182,7 +211,8 @@ with st.sidebar:
                                     "así el piloto mide su caída y el freno funciona.")
     if st.button("Actualizar precios", width="stretch"):
         _precios.clear()
-    st.caption(f"Se guarda en {diario.carpeta()} (fuera de git).")
+    en_servidor = acceso.configuracion()[1]
+    st.caption(f"Se guarda en {diario.carpeta()}" + ("." if en_servidor else " (fuera de git)."))
 
 # --------------------------------------------------------------------------
 st.title("Piloto de riesgo")
@@ -213,6 +243,29 @@ if not cripto and efectivo <= 0:
 
 dia = str(mercado.ultimo_cierre().date())
 minuto = pd.Timestamp.now(tz="UTC").strftime("%Y%m%d%H%M")
+ajustes_guardables = {**asdict(aj), "reparto": reparto}
+mezcla_guardable = mezcla_medida if reparto == "medida" else guardada.get("mezcla")
+
+# Se guarda ANTES de calcular el plan: si el calculo falla (sin red, una moneda
+# con poca historia), lo anotado no se pierde y la caida se sigue midiendo con
+# las tenencias nuevas. La pasada que guarda termina en st.rerun().
+if quiere_guardar:
+    diario.guardar_cartera(tenencias, mezcla_guardable, ajustes_guardables)
+    if not fotos or fotos[-1]["tenencias"] != tenencias:
+        # Los precios de la foto son informativos (la caida se mide con los
+        # cierres): sin red se anota igual, con los que haya.
+        try:
+            precios_foto = _precios(tuple(sorted(cripto)), minuto) if cripto else {}
+        except Exception:  # noqa: BLE001 - la foto no puede depender de la red
+            precios_foto = {}
+        diario.anotar_foto(tenencias, precios_foto)
+    st.session_state["guardado"] = True
+    st.rerun()
+
+if (tenencias != guardada.get("tenencias") or mezcla_guardable != guardada.get("mezcla")
+        or ajustes_guardables != guardada.get("ajustes")):
+    st.sidebar.warning("Hay cambios sin guardar.")
+
 try:
     with st.spinner("Descargando precios de Binance..."):
         s = sesion.calcular(tenencias, reparto,
@@ -230,20 +283,6 @@ except Exception as exc:  # noqa: BLE001 - que el usuario vea un mensaje, no una
     st.stop()
 
 plan, cierres = s.plan, s.cierres
-ajustes_guardables = {**asdict(aj), "reparto": reparto}
-mezcla_guardable = mezcla_medida if reparto == "medida" else guardada.get("mezcla")
-
-# Se guarda antes de pintar nada mas: la pasada que guarda termina en st.rerun().
-if quiere_guardar:
-    diario.guardar_cartera(tenencias, mezcla_guardable, ajustes_guardables)
-    if not fotos or fotos[-1]["tenencias"] != tenencias:
-        diario.anotar_foto(tenencias, {a: s.precios[a] for a in cripto})
-    st.session_state["guardado"] = True
-    st.rerun()
-
-if (tenencias != guardada.get("tenencias") or mezcla_guardable != guardada.get("mezcla")
-        or ajustes_guardables != guardada.get("ajustes")):
-    st.sidebar.warning("Hay cambios sin guardar.")
 
 for a in s.avisos:
     st.warning(a)
@@ -306,7 +345,8 @@ with hoy:
             st.caption(f"Se omiten órdenes de menos de {usdt(aj.minimo_orden)}: "
                        + ", ".join(pequenas.index) + ".")
         if todas["recortada"].any():
-            st.caption("Compras recortadas a lo que pagan su efectivo y las ventas de arriba: "
+            st.caption("Compras recortadas a lo que pagan su efectivo y las ventas de arriba, "
+                       "descontado su coste: "
                        + ", ".join(todas.index[todas["recortada"]]) + ".")
     if len(o):
         despues = plan.valor_cripto + float(o["importe_orden"].sum())

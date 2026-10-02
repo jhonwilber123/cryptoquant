@@ -1,0 +1,4 @@
+# Lo que se ejecuta en el servidor (Linux) va con LF aunque git use CRLF en
+# Windows: bash y el Dockerfile fallan con CRLF.
+deploy/** text eol=lf
+*.sh text eol=lf

@@ -49,8 +49,15 @@ def velas(activo: str, ahora: pd.Timestamp | None = None) -> pd.DataFrame:
             return guardadas
         raise ValueError(f"{a}: no hay par {a}/USDT en Binance o no hay conexion "
                          f"({type(exc).__name__})") from None
+    if guardadas is not None and len(guardadas):
+        # Una descarga que llega menos lejos que lo guardado (p. ej. solo los
+        # archivos mensuales, si la API falla) no puede borrar los ultimos dias.
+        df = pd.concat([guardadas[datos.COLUMNAS], df[datos.COLUMNAS]]).sort_index()
+        df = df[~df.index.duplicated(keep="last")]
     ruta.parent.mkdir(parents=True, exist_ok=True)
     datos.exportar_csv(df, ruta)
+    if df.index[-1] < ultimo_cierre(ahora):
+        df.attrs["aviso"] = f"{a}: Binance solo dio velas hasta el {df.index[-1].date()}; se usan esas"
     return df
 
 

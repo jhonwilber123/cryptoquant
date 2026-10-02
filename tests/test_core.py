@@ -554,3 +554,37 @@ def test_empty_cache_counts_as_stale():
     from cryptoquant.data.sources import cache_is_stale
 
     assert cache_is_stale(pd.DataFrame(), "1d")
+
+
+# --------------------------------------------------------------------------
+# Linea de comandos: argumentos imposibles se rechazan antes de calcular nada
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("argv", [
+    ["recommend", "--capital", "-5000"], ["recommend", "--capital", "nan"],
+    ["recommend", "--capital", "inf"], ["pairs", "--top", "-3"], ["pairs", "--top", "0"],
+    ["forward", "reproduce", "--last", "-2"], ["forward", "record", "--dry-run", "--capital", "-1"],
+    ["forward", "record", "--dry-run", "--date", "2026-13-40"], ["tesis", "--hasta", "ayer"],
+    ["tesis", "--bootstrap", "0"], ["tesis", "--hasta", ""],
+])
+def test_cli_rechaza_argumentos_imposibles(argv, monkeypatch):
+    from cryptoquant import cli
+
+    def no_debe_llegar(*a, **k):
+        raise AssertionError("el argumento paso el filtro y el comando empezo a cargar datos")
+    # Si un argumento no se rechaza, el comando no puede tocar datos ni reportes reales.
+    monkeypatch.setattr(cli, "_load", no_debe_llegar)
+    monkeypatch.setattr(cli, "load_universe", no_debe_llegar)
+    with pytest.raises(SystemExit) as e:
+        cli.main(argv)
+    assert e.value.code == 2
+
+
+def test_config_explicita_inexistente_es_un_error(tmp_path, capsys):
+    """Una ruta mal escrita no puede dejar correr el sistema con otro objetivo de volatilidad."""
+    from cryptoquant.cli import main
+
+    with pytest.raises(FileNotFoundError, match="no_existe.yaml"):
+        Config.load(tmp_path / "no_existe.yaml")
+    assert Config.load(None).risk.target_volatility > 0          # el config.yaml del proyecto
+    assert main(["-c", str(tmp_path / "no_existe.yaml"), "forward", "verify"]) == 2
+    assert "no_existe.yaml" in capsys.readouterr().out

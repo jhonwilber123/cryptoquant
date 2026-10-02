@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 from cryptoquant.laboratorio import control, datos
-from cryptoquant.piloto import diario, mercado, motor, sesion, vista
+from cryptoquant.piloto import acceso, diario, mercado, motor, sesion, vista
 
 RAIZ = Path(__file__).resolve().parents[1]
 VOLS = {"BTC": 0.03, "ETH": 0.04, "SOL": 0.06, "ADA": 0.05}
@@ -327,6 +327,22 @@ def test_ventas_omitidas_no_pagan_compras():
     assert p.ordenes.loc["ADA", "importe_orden"] == pytest.approx(p.ordenes.loc["ADA", "importe"])
 
 
+def test_al_descartar_una_compra_pequena_las_demas_recuperan_su_efectivo():
+    """Descartar una compra por debajo del minimo devuelve su parte del efectivo a las demas."""
+    importe = pd.Series({"A": 100.0, "B": 11.0})
+    orden = motor._al_efectivo(importe, pd.Series(True, index=importe.index),
+                               efectivo=100.0, minimo=10.0)
+    assert orden["B"] == 0 and orden["A"] == pytest.approx(100.0)
+
+
+def test_las_ventas_pagan_compras_descontado_su_coste():
+    """Vender 100 USDT de una moneda no deja 100 para comprar otra."""
+    importe = pd.Series({"A": -100.0, "B": 100.0})
+    orden = motor._al_efectivo(importe, pd.Series(True, index=importe.index),
+                               efectivo=0.0, minimo=10.0, coste=0.0015)
+    assert orden["A"] == -100.0 and orden["B"] == pytest.approx(99.85)
+
+
 def test_contribucion_al_riesgo():
     c = _cierres()
     p = motor.decidir({"BTC": 1, "SOL": 1, "USDT": 100}, _precios(c), c)
@@ -609,6 +625,20 @@ def test_sin_red_ni_guardadas(aislado):
     assert not (aislado / "velas" / "XYZUSDT_1d.csv").exists()
 
 
+def test_una_descarga_mas_corta_no_borra_lo_guardado(aislado, monkeypatch):
+    """Si la API falla y solo quedan los archivos mensuales, los ultimos dias no se pierden."""
+    (aislado / "velas").mkdir(parents=True)
+    hasta = mercado.ultimo_cierre(AHORA) - pd.Timedelta(days=3)
+    datos.exportar_csv(_velas_falsas(hasta), aislado / "velas" / "BTCUSDT_1d.csv")
+    monkeypatch.setattr(datos, "descargar_velas",
+                        lambda *a, **k: _velas_falsas(hasta - pd.Timedelta(days=27), n=300))
+    v = mercado.velas("BTC", AHORA)
+    assert v.index[-1] == hasta and v.index.is_unique and v.index.is_monotonic_increasing
+    assert len(v) == 300 + 27                        # lo bajado y los dias que solo estaban guardados
+    assert datos.leer_csv(aislado / "velas" / "BTCUSDT_1d.csv").index[-1] == hasta
+    assert "solo dio velas hasta el" in v.attrs["aviso"]
+
+
 def test_cache_danada_se_vuelve_a_bajar(aislado, monkeypatch):
     (aislado / "velas").mkdir(parents=True)
     (aislado / "velas" / "BTCUSDT_1d.csv").write_text("basura,sin,columnas\n1,2,3\n")
@@ -831,3 +861,51 @@ def test_texto_con_datos_imposibles(monkeypatch, capsys):
 def test_el_json_guardado_es_legible(aislado):
     diario.guardar_cartera({"BTC": 1}, None, {"objetivo": 0.15})
     json.loads((aislado / "cartera.json").read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------
+# Contraseña para publicarlo en un servidor
+# --------------------------------------------------------------------------
+def test_la_contrasena_se_guarda_derivada_y_se_comprueba():
+    guardada = acceso.crear("una contraseña larga ñ", iteraciones=1000)
+    assert "contraseña" not in guardada and "$" not in guardada   # Compose interpreta los '$'
+    assert re.fullmatch(r"pbkdf2_sha256:1000:[0-9a-f]{32}:[0-9a-f]{64}", guardada)
+    assert acceso.comprobar("una contraseña larga ñ", guardada)
+    assert not acceso.comprobar("una contraseña larga n", guardada)
+    assert acceso.crear("una contraseña larga ñ", iteraciones=1000) != guardada   # sal nueva cada vez
+
+
+@pytest.mark.parametrize("guardada", ["", "basura", "pbkdf2_sha256:1000:zz:00", "md5:1000:00:00",
+                                      "pbkdf2_sha256:0:00:00", "pbkdf2_sha256:1000:00"])
+def test_una_derivada_mal_escrita_no_deja_entrar(guardada):
+    assert not acceso.comprobar("cualquier contraseña", guardada)
+
+
+def test_contrasena_demasiado_corta():
+    with pytest.raises(ValueError, match="al menos 12"):
+        acceso.crear("corta")
+
+
+def test_configuracion_del_acceso():
+    assert acceso.configuracion({}) == (None, False)
+    assert acceso.configuracion({"PILOTO_CLAVE_HASH": "  ", "PILOTO_EXIGIR_CLAVE": "1"}) == (None, True)
+    assert acceso.configuracion({"PILOTO_CLAVE_HASH": " x:1:2:3\n"}) == ("x:1:2:3", False)
+
+
+def test_crear_clave_desde_la_consola(monkeypatch, capsys):
+    """Por la salida solo sale la derivada: desplegar.ps1 la recoge tal cual."""
+    import getpass
+
+    from cryptoquant import cli
+
+    respuestas = iter(["una contraseña larga", "una contraseña larga"])
+    monkeypatch.setattr(getpass, "getpass", lambda prompt="": next(respuestas))
+    assert cli.main(["piloto", "--crear-clave"]) == 0
+    salida = capsys.readouterr().out.strip()
+    assert re.fullmatch(r"pbkdf2_sha256:\d+:[0-9a-f]+:[0-9a-f]+", salida)
+    assert acceso.comprobar("una contraseña larga", salida)
+
+    respuestas = iter(["una contraseña larga", "otra distinta larga"])
+    assert cli.main(["piloto", "--crear-clave"]) == 1
+    capt = capsys.readouterr()
+    assert capt.out == "" and "no coinciden" in capt.err

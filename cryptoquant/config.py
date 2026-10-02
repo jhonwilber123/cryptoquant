@@ -107,10 +107,17 @@ class Config:
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":
-        """Carga config.yaml si existe; en caso contrario usa los defaults."""
+        """Carga config.yaml si existe; en caso contrario usa los defaults.
+
+        Una ruta dada a mano (`-c`) tiene que existir: mal escrita, el sistema
+        correria sin avisar con otros parametros de riesgo.
+        """
+        explicita = bool(path)
         path = Path(path) if path else ROOT / "config.yaml"
         cfg = cls()
         if not path.exists():
+            if explicita:
+                raise FileNotFoundError(f"no existe el fichero de configuracion: {path}")
             return cfg
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for section in ("data", "risk", "signal", "backtest"):

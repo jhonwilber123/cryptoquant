@@ -504,3 +504,47 @@ def test_working_copy_cannot_write_the_experiment(tmp_path, monkeypatch, cfg):
         jn.write_amendment(jn.AMENDMENT_E1, "2026-01-05", cfg, "test")
     assert len(jn.read_journal()) == 1                          # leer, si puede
     assert jn.verify_chain().ok
+
+
+# --------------------------------------------------------------------------
+# forward reproduce: H2 se juzga con el protocolo vigente
+# --------------------------------------------------------------------------
+def test_reproduce_la_fase_archivada_no_cuenta_para_h2(monkeypatch, capsys):
+    """Tras una enmienda, H2 cuenta desde su fecha (como `forward report`). La
+    fase 1 se recalcula y se informa, pero no decide: si no, `sincronizar.ps1
+    -Codigo` restauraria siempre el codigo por decisiones ya archivadas."""
+    from cryptoquant import cli
+
+    e1 = {"hash": "e1", "effective_from": "2026-09-20", "anchor": "2026-09-20"}
+    diag = {"action": "mantener", "model_upto": "2026-09-20"}
+    registros = [
+        {"decision_date": "2026-09-10", "weights": {"BTC": 0.30}},               # fase 1
+        {"decision_date": "2026-09-21", "weights": {"BTC": 0.20}, "amendment_hash": "e1",
+         "diagnostics": diag},
+    ]
+    recalculado = {"2026-09-10": 0.10, "2026-09-21": 0.20}
+    monkeypatch.setattr(jn, "read_journal", lambda *a, **k: registros)
+    monkeypatch.setattr(jn, "current_amendment", lambda *a, **k: e1)
+    monkeypatch.setattr(jn, "amendment_by_hash", lambda h, *a, **k: e1 if h == "e1" else None)
+    monkeypatch.setattr(cli, "_load", lambda cfg, refresh: (None, None, None))
+
+    class Doble:
+        def __init__(self, *a, **k):
+            pass
+
+        def decide_at(self, ohlcv, closes, when, **k):
+            return pd.Series({"BTC": recalculado[when]}), dict(diag)
+
+    monkeypatch.setattr(cli, "WalkForwardBacktest", Doble)
+
+    assert cli.main(["forward", "reproduce", "--last", "0"]) == 0
+    salida = capsys.readouterr().out
+    assert "H2 CUMPLE" in salida and "2026-09-10" in salida and "archivada" in salida
+    # Una del protocolo vigente que no se reproduce si hace fallar H2.
+    recalculado["2026-09-21"] = 0.25
+    assert cli.main(["forward", "reproduce", "--last", "0"]) == 1
+    assert "H2 NO CUMPLE: 1 " in capsys.readouterr().out
+    # Sin enmienda, todas cuentan.
+    monkeypatch.setattr(jn, "current_amendment", lambda *a, **k: None)
+    recalculado["2026-09-21"] = 0.20
+    assert cli.main(["forward", "reproduce", "--last", "0"]) == 1

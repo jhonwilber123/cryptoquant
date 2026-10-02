@@ -4,6 +4,8 @@ __pycache__/
 data/cache/
 # Piloto de riesgo: la cartera real del usuario. Nunca al repositorio.
 data/piloto/
+# Historia larga para la tesis (python -m cryptoquant tesis --descargar-historia).
+data/historico/
 reports/*.png
 reports/*.csv
 .pytest_cache/
@@ -33,3 +35,6 @@ clase/**/datos/
 clase/**/*.csv
 investigacion/busquedas/*/openalex_*.json
 investigacion/busquedas/*/alicia_*.json
+reports/tesis/
+# Despliegue: el entorno del servidor (dominio y derivada de la clave) no va al repositorio.
+deploy/*.env

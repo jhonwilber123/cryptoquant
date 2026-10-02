@@ -21,7 +21,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from .backtest.engine import WalkForwardBacktest
+from .backtest.engine import WalkForwardBacktest, buy_and_hold
 from .backtest.metrics import compare, summarize
 from .config import Config, annualization_factor
 from .data.sources import load_universe
@@ -173,7 +173,10 @@ def cmd_backtest(args, cfg: Config) -> int:
         results[name] = res
 
     main = results["Sistema completo"]
-    strategies["Buy & hold"] = main.benchmark_returns
+    # La referencia del motor es equiponderada, rebalanceada cada dia al cierre y sin
+    # costes: no es comprar y mantener. Las dos van aparte para que no se confundan.
+    strategies["Pasiva equiponderada"] = main.benchmark_returns
+    strategies["Comprar y mantener"] = buy_and_hold(closes.loc[main.equity.index[0]:]).pct_change().dropna()
 
     _echo()
     rp.print_metrics_table(compare(strategies, ann), "Comparativa walk-forward (neto de costes)")
@@ -747,10 +750,18 @@ def cmd_forward_reproduce(args, cfg: Config) -> int:
     _echo("Si difiere: o el exchange reviso el historico, o hay fuga de futuro.")
     _echo()
 
-    worst = 0.0
-    failures = 0
+    # H2 se juzga con el protocolo vigente, como `forward report`. Las anotaciones
+    # anteriores a la enmienda se recalculan y se informan, pero no deciden: ya
+    # estan archivadas, y contarlas haria que `sincronizar.ps1 -Codigo`
+    # restaurase siempre el codigo por decisiones que no cuentan.
+    vigentes = {r["decision_date"] for r in jn.active_records(records, jn.current_amendment())}
+    worst = worst_arch = 0.0
+    failures = failures_arch = n_arch = 0
     n_scheduled = 0
     for rec in subset:
+        vigente = rec["decision_date"] in vigentes
+        marca = "" if vigente else "  (fase archivada, no cuenta para H2)"
+        n_arch += not vigente
         state = rec.get("state_in") or {}
         prev = state.get("prev_weights") or {}
         target = state.get("prev_target") or {}
@@ -765,13 +776,19 @@ def cmd_forward_reproduce(args, cfg: Config) -> int:
                 previous_target=pd.Series(target, dtype=float) if amendment else None,
             )
         except Exception as exc:
-            _echo(f"  {rec['decision_date']}  no reproducible: {exc}")
-            failures += 1
+            _echo(f"  {rec['decision_date']}  no reproducible: {exc}{marca}")
+            if vigente:
+                failures += 1
+            else:
+                failures_arch += 1
             continue
         recorded = pd.Series(rec["weights"], dtype=float)
         diff = (w.reindex(recorded.index).fillna(0.0) - recorded).abs()
         dmax = float(diff.max()) if len(diff) else 0.0
-        worst = max(worst, dmax)
+        if vigente:
+            worst = max(worst, dmax)
+        else:
+            worst_arch = max(worst_arch, dmax)
         problems = []
         if dmax >= 0.01:
             problems.append(f"dif. max {dmax:.4f} ({diff.idxmax()})")
@@ -783,24 +800,133 @@ def cmd_forward_reproduce(args, cfg: Config) -> int:
                     problems.append(f"{key}: registrado {rd.get(key)}, recalculado {diag.get(key)}")
         if problems or args.verbose:
             _echo(f"  {rec['decision_date']}  {'DIFIERE' if problems else 'OK'}  "
-                  + ("; ".join(problems) if problems else f"dif. max {dmax:.4f}"))
+                  + ("; ".join(problems) if problems else f"dif. max {dmax:.4f}") + marca)
         if problems:
-            failures += 1
+            if vigente:
+                failures += 1
+            else:
+                failures_arch += 1
 
+    n_vig = len(subset) - n_arch
     _echo()
     _echo(f"  Comprobadas    : {len(subset)} "
           f"({n_scheduled} con el calendario del backtest)")
-    _echo(f"  Diferencia max : {worst:.4f} ({worst * 100:.2f} pp)")
+    _echo(f"  Diferencia max : {worst:.4f} ({worst * 100:.2f} pp)"
+          + (" en las del protocolo vigente" if n_arch else ""))
+    if n_arch:
+        _echo(f"  Fase archivada : {n_arch} anotaciones anteriores a la enmienda vigente; "
+              f"{failures_arch} difieren (max {worst_arch * 100:.2f} pp). No cuentan para H2.")
+    if n_vig == 0:
+        _echo("  H2: ninguna de las comprobadas pertenece al protocolo vigente.")
+        return 0
     if failures == 0:
         # Recalcular prueba reproducibilidad y causalidad. Que el calendario sea
         # el del backtest lo comprueba ademas un test automatico
         # (tests/test_forward.py::test_live_schedule_matches_the_backtest).
         _echo("  H2 CUMPLE: las decisiones son reproducibles"
-              + (" y siguen el calendario del backtest." if n_scheduled == len(subset)
+              + (" y siguen el calendario del backtest." if n_scheduled == n_vig
                  else "; las de la fase 1 no seguian el calendario del backtest."))
         return 0
     _echo(f"  H2 NO CUMPLE: {failures} decisiones no reproducibles.")
     return 1
+
+
+# --------------------------------------------------------------------------
+def cmd_tesis(args, cfg: Config) -> int:
+    """Contrastes retrospectivos de la tesis sobre un periodo fijo, sin red."""
+    from . import tesis
+
+    if args.descargar_historia:
+        _echo("Descargando la historia larga (Bitstamp desde 2011, Binance desde cada listado)...")
+        for fuente, (desde, hasta, n) in tesis.descargar_historia(cfg.data.symbols).items():
+            _echo(f"  {fuente:24s} {desde} a {hasta}  ({n} dias)")
+    _echo(f"Cargando datos de la cache local (sin red), corte {args.hasta}...")
+    ohlcv, closes, _ = load_universe(cfg, offline=True)
+    _echo("Simulacion walk-forward y contrastes (tarda unos minutos)...")
+    out = tesis.ejecutar(ohlcv, closes, cfg, args.hasta, n_boot=args.bootstrap)
+    res, info = out["backtest"], out["resultado"]
+
+    _echo()
+    _echo(f"Evaluacion retrospectiva: {info['periodo'][0]} a {info['periodo'][1]} "
+          f"({info['observaciones']} dias)")
+    _echo("=" * 78)
+    m = out["metricas"].T
+    view = pd.DataFrame({
+        "Rent. anual": m["rentabilidad_anual"].map(lambda v: f"{v:.2%}"),
+        "Volatilidad": m["volatilidad"].map(lambda v: f"{v:.2%}"),
+        "Caida max.": m["caida_maxima"].map(lambda v: f"{v:.2%}"),
+        "Sharpe": m["sharpe"].map(lambda v: f"{v:.2f}"),
+        "Capital final": m["capital_final"].map(lambda v: f"{v:,.0f}"),
+    })
+    _echo(view.to_string())
+
+    _echo()
+    _echo("Contrastes")
+    _echo("-" * 78)
+    for c in out["contrastes"].itertuples():
+        con_signo = "diferencia" in c.medida or "exceso" in c.medida
+        fmt = (lambda v: f"{v:+.2%}") if con_signo else (lambda v: f"{v:.2%}")
+        ic = f" IC95% [{fmt(c.ic95_inf)}, {fmt(c.ic95_sup)}]" if np.isfinite(c.ic95_inf) else ""
+        _echo(f"  {c.hipotesis:20s} [{c.resultado.upper()}]")
+        _echo(f"    {c.medida}: {fmt(c.estimacion)}{ic}")
+        _echo(f"    {c.prob_tipo}: {c.prob:.3f} | criterio: {c.criterio}")
+    v = out["ventanas"]
+    if len(v):
+        _echo(f"  HE1 por ventanas de {tesis.VENTANA_H1} dias invertido: "
+              f"{int(v['dentro_del_rango'].sum())} de {len(v)} dentro del rango")
+    h = info["he4"]
+    _echo(f"  HE4: tracking error {h['tracking_error']:.2%}, ratio de informacion "
+          f"{h['ratio_informacion']:.3f}, ~{h['anos_para_significancia']:.0f} anos para p<0,05 "
+          f"(~{h['anos_con_potencia_80']:.0f} con potencia del 80%)")
+
+    _echo()
+    _echo("Ampliacion (HE5 a HE7, no pre-registradas)")
+    _echo("-" * 78)
+    for c in out["ampliacion"].itertuples():
+        porcentaje = c.hipotesis in ("HE5", "HE6")
+        fmt = (lambda v: f"{v:+.3%}") if porcentaje else (lambda v: f"{v:+.4f}")
+        ic = f" IC95% [{fmt(c.ic95_inf)}, {fmt(c.ic95_sup)}]" if np.isfinite(c.ic95_inf) else ""
+        _echo(f"  {c.hipotesis:20s} [{c.resultado.upper()}]")
+        _echo(f"    {c.medida}: {fmt(c.estimacion)}{ic}")
+        _echo(f"    {c.prob_tipo}: {c.prob:.4f} | criterio: {c.criterio}")
+    s = out["senales"]
+    _echo(f"  Filtro de evidencia: {int(s['pasa'].sum())} de {len(s)} senales pasan "
+          f"(umbral p < {s['umbral'].iloc[0]:.5f})")
+
+    if out["historia"] is None:
+        _echo("  Historia larga: no descargada (use --descargar-historia).")
+
+    c = out["comprar_y_mantener"]
+    _echo(f"  La pasiva es equiponderada, rebalanceada cada dia y sin costes. Comprar y mantener "
+          f"sin rebalanceo: {c['cagr']:.2%} anual, volatilidad {c['volatility']:.2%}, "
+          f"caida maxima {c['max_drawdown']:.2%}")
+
+    filas = ["rentabilidad_anual", "volatilidad", "caida_maxima", "sharpe", "exceso_igual_vol",
+             "sharpe_deflactado", "he1", "he3_volatilidad", "he3_caida", "he4"]
+    historia = pd.DataFrame(out["historia"]) if out["historia"] else None
+    for titulo, tabla in (("Aporte de cada componente", out["variantes"]),
+                          ("Robustez frente a la corrida del prototipo", out["robustez"]),
+                          ("Sensibilidad a dos errores de implementacion (el modelo no cambia)",
+                           out["sensibilidad"]),
+                          ("Otros universos y ciclos (historia larga)", historia)):
+        if tabla is None:
+            continue
+        _echo()
+        _echo(titulo)
+        _echo("-" * 78)
+        vista = tabla.loc[filas].map(lambda v: f"{v:.2%}" if isinstance(v, float) else v)
+        vista.loc["sharpe"] = tabla.loc["sharpe"].map(lambda v: f"{v:.2f}")
+        _echo(vista.to_string())
+
+    try:
+        rp.plot_backtest(res, annualization_factor(cfg.data.timeframe), filename="tesis/figura_backtest.png")
+    except Exception as exc:
+        _echo(f"No se pudo generar la figura: {exc}")
+    _echo()
+    _echo(f"Huella de los retornos: {info['huella_retornos'][:16]}  "
+          f"(Python {info['entorno']['python']}, scikit-learn {info['entorno']['scikit-learn']})")
+    _echo(f"Tablas y figura en {tesis.SALIDA}")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -813,9 +939,18 @@ def cmd_piloto(args, cfg: Config) -> int:
     """
     if args.texto:
         return _piloto_texto()
+    if args.crear_clave:
+        return _piloto_crear_clave()
+    import importlib.util
     import subprocess
     import threading
     from pathlib import Path
+
+    if importlib.util.find_spec("streamlit") is None:
+        _echo("Falta Streamlit, que la app necesita. Instalelo en este mismo entorno:")
+        _echo(f'  "{sys.executable}" -m pip install -r requirements.txt')
+        _echo("Mientras tanto, el plan de hoy en la consola: python -m cryptoquant piloto --texto")
+        return 2
 
     app = Path(__file__).resolve().parent / "piloto" / "app.py"
     host = "0.0.0.0" if args.red else "127.0.0.1"
@@ -867,6 +1002,28 @@ def _abrir_cuando_responda(url: str, puerto: int, espera: float = 60.0) -> None:
                 webbrowser.open(url)
                 return
         time.sleep(0.3)
+
+
+def _piloto_crear_clave() -> int:
+    """Pide la contraseña del piloto para un servidor e imprime su derivada (PILOTO_CLAVE_HASH).
+
+    Por la salida solo sale la derivada: scripts/desplegar.ps1 la recoge de ahi.
+    Los avisos van a stderr.
+    """
+    import getpass
+
+    from .piloto import acceso
+
+    clave = getpass.getpass(f"Contraseña del piloto (al menos {acceso.MINIMO} caracteres): ")
+    if clave != getpass.getpass("Repítala: "):
+        print("Las dos contraseñas no coinciden.", file=sys.stderr)
+        return 1
+    try:
+        print(acceso.crear(clave))
+    except ValueError as exc:
+        print(f"No se ha creado: {exc}.", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _piloto_texto() -> int:
@@ -924,7 +1081,7 @@ def _piloto_texto() -> int:
         if len(pequenas):
             _echo(f"  Se omiten ordenes de menos de {aj.minimo_orden:,.2f} USDT: {', '.join(pequenas)}.")
         if o["recortada"].any():
-            _echo("  Compras recortadas a lo que pagan su efectivo y las ventas de arriba: "
+            _echo("  Compras recortadas a lo que pagan su efectivo y las ventas de arriba, descontado su coste: "
                   f"{', '.join(o.index[o['recortada']])}.")
     _echo()
     _echo("Solo recomienda: las ordenes las decide y ejecuta usted. Guarde la cartera al terminar.")
@@ -1311,6 +1468,21 @@ def _entero(lo: int, hi: int):
     return tipo
 
 
+def _fecha(texto: str) -> str:
+    """Tipo de argparse: una fecha valida (AAAA-MM-DD). Devuelve el texto tal cual.
+
+    Una fecha vacia seria NaT, y pandas la toma como 'sin corte': la tesis
+    correria sobre todo el historico en lugar de sobre su periodo fijo.
+    """
+    try:
+        valida = not pd.isna(pd.Timestamp(texto))
+    except (ValueError, TypeError, OverflowError):
+        valida = False
+    if not valida:
+        raise argparse.ArgumentTypeError(f"{texto!r} no es una fecha valida (use AAAA-MM-DD)")
+    return texto
+
+
 def _sin_traceback(cmd):
     """Errores de uso y de datos como un mensaje, no como un volcado de pila.
 
@@ -1359,7 +1531,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_analyze)
 
     pr = sub.add_parser("pairs", help="pares cointegrados")
-    pr.add_argument("--top", type=int, default=10)
+    pr.add_argument("--top", type=_entero(1, 10_000), default=10)
     pr.set_defaults(func=cmd_pairs)
 
     b = sub.add_parser("backtest", help="backtest walk-forward")
@@ -1372,8 +1544,17 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("recommend", help="asignacion recomendada actual")
     r.add_argument("--method", default="hrp",
                    choices=["hrp", "risk_parity", "min_variance", "equal"])
-    r.add_argument("--capital", type=float, help="capital a asignar")
+    r.add_argument("--capital", type=_en(0, 1e15, con_lo=True), help="capital a asignar")
     r.set_defaults(func=cmd_recommend)
+
+    te = sub.add_parser("tesis", help="contrastes retrospectivos de la tesis (HE1, HE3 a HE7)")
+    te.add_argument("--hasta", type=_fecha, default="2026-09-10",
+                    help="ultima fecha de la evaluacion retrospectiva (la que fija la tesis)")
+    te.add_argument("--bootstrap", type=_entero(100, 1_000_000), default=5000,
+                    help="replicas del bootstrap de bloques")
+    te.add_argument("--descargar-historia", action="store_true",
+                    help="bajar antes la historia larga a data/historico/ (no toca la cache)")
+    te.set_defaults(func=cmd_tesis)
 
     pl = sub.add_parser("piloto", help="piloto de riesgo: cuanto tener en cripto (app en el navegador)")
     pl.add_argument("--texto", action="store_true",
@@ -1382,6 +1563,8 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--red", action="store_true",
                     help="aceptar conexiones de la red local (por defecto, solo este equipo)")
     pl.add_argument("--sin-navegador", action="store_true", help="no abrir el navegador")
+    pl.add_argument("--crear-clave", action="store_true",
+                    help="pedir la contraseña para publicarlo en un servidor e imprimir su derivada")
     pl.set_defaults(func=_sin_traceback(cmd_piloto))
 
     d = sub.add_parser("dashboard", help="generar el panel visual (HTML)")
@@ -1451,8 +1634,8 @@ def build_parser() -> argparse.ArgumentParser:
     fr = fsub.add_parser("record", help="registrar la decision de hoy")
     fr.add_argument("--method", default="hrp",
                     choices=["hrp", "risk_parity", "min_variance", "equal"])
-    fr.add_argument("--capital", type=float)
-    fr.add_argument("--date", help="fecha de decision (por defecto, la ultima barra)")
+    fr.add_argument("--capital", type=_en(0, 1e15, con_lo=True))
+    fr.add_argument("--date", type=_fecha, help="fecha de decision (por defecto, la ultima barra)")
     fr.add_argument("--note", default="", help="anotacion libre")
     fr.add_argument("--dry-run", action="store_true", help="calcular sin escribir")
     fr.add_argument("--if-new", action="store_true",
@@ -1472,7 +1655,7 @@ def build_parser() -> argparse.ArgumentParser:
     fx = fsub.add_parser("reproduce", help="recomputar decisiones pasadas (H2)")
     fx.add_argument("--method", default="hrp",
                     choices=["hrp", "risk_parity", "min_variance", "equal"])
-    fx.add_argument("--last", type=int, default=10,
+    fx.add_argument("--last", type=_entero(0, 1_000_000), default=10,
                     help="cuantas anotaciones recientes comprobar (0 = todas)")
     fx.set_defaults(func=cmd_forward_reproduce)
     return p
@@ -1481,7 +1664,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _setup_logging(args.verbose)
-    cfg = Config.load(args.config)
+    try:
+        cfg = Config.load(args.config)
+    except FileNotFoundError as exc:
+        _echo(f"ERROR: {exc}")
+        return 2
     np.random.seed(cfg.seed)
     from .forward.journal import WorkingCopyError
 

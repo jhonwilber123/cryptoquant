@@ -129,20 +129,26 @@ def leer_archivo_klines(contenido: bytes) -> pd.DataFrame:
     return pd.DataFrame([[float(v) for v in f[1:6]] for f in filas], index=idx, columns=COLUMNAS)
 
 
-def descargar_archivos(simbolo: str, temporalidad: str, desde: str) -> pd.DataFrame:
-    """Historia larga desde los archivos publicos: mensuales y, el mes en curso, diarios."""
+def descargar_archivos(simbolo: str, temporalidad: str, desde: str,
+                       hoy: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Historia larga desde los archivos publicos: mensuales y, los meses recientes, diarios."""
     sym = par(simbolo).replace("/", "")
-    hoy = pd.Timestamp.now(tz="UTC").normalize()
-    partes = []
-    ultimo_mes = (hoy - pd.offsets.MonthBegin(1)).tz_localize(None).to_period("M")
-    for mes in pd.period_range(pd.Timestamp(desde).to_period("M"), ultimo_mes, freq="M"):
+    hoy = (hoy if hoy is not None else pd.Timestamp.now(tz="UTC")).tz_convert("UTC").normalize()
+    ayer = (hoy - pd.Timedelta(days=1)).tz_localize(None)
+    partes, sin_mensual = [], []
+    for mes in pd.period_range(pd.Timestamp(desde).to_period("M"), ayer.to_period("M"), freq="M"):
         b = _bajar(f"{ARCHIVOS}/monthly/klines/{sym}/{temporalidad}/{sym}-{temporalidad}-{mes}.zip")
         if b:
             partes.append(leer_archivo_klines(b))
-    for dia in pd.date_range(hoy.replace(day=1), hoy - pd.Timedelta(days=1), freq="D"):
-        b = _bajar(f"{ARCHIVOS}/daily/klines/{sym}/{temporalidad}/{sym}-{temporalidad}-{dia:%Y-%m-%d}.zip")
-        if b:
-            partes.append(leer_archivo_klines(b))
+        else:
+            sin_mensual.append(mes)
+    # El archivo de un mes sale unos dias despues de acabar: hasta entonces, ese
+    # mes (y el mes en curso) solo estan en los archivos diarios.
+    for mes in [m for m in sin_mensual if m >= ayer.to_period("M") - 1]:
+        for dia in pd.date_range(mes.start_time, min(mes.end_time.normalize(), ayer), freq="D"):
+            b = _bajar(f"{ARCHIVOS}/daily/klines/{sym}/{temporalidad}/{sym}-{temporalidad}-{dia:%Y-%m-%d}.zip")
+            if b:
+                partes.append(leer_archivo_klines(b))
     if not partes:
         raise ValueError(f"data.binance.vision no tiene archivos de {sym} {temporalidad}")
     df = pd.concat(partes).sort_index()
