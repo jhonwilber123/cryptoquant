@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -774,6 +775,8 @@ def test_sin_claves_ni_ordenes():
 
 
 def test_datos_personales_fuera_de_git():
+    if not (RAIZ / ".git").exists() or shutil.which("git") is None:
+        pytest.skip("sin repositorio git: la carpeta se bajo como ZIP o falta git")
     for ruta in ("data/piloto/cartera.json", "data/piloto/fotos.jsonl", "data/piloto/velas/BTCUSDT_1d.csv"):
         r = subprocess.run(["git", "-c", "safe.directory=*", "check-ignore", "-q", ruta], cwd=RAIZ)
         assert r.returncode == 0, f"{ruta} no esta ignorado por git"
