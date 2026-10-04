@@ -1,0 +1,7 @@
+# La imagen solo necesita el paquete y sus requisitos. Sin esta lista, Docker
+# enviaria todo el repositorio (PDF, datos, informes) a cada construccion.
+*
+!cryptoquant/
+!deploy/requirements-piloto.txt
+**/__pycache__
+**/*.pyc

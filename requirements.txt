@@ -1,0 +1,16 @@
+# numpy 2.3 es la primera con instalador para Python 3.14 (el de la clase).
+numpy>=1.26,<2.6
+pandas>=2.2,<2.4
+scipy>=1.11
+scikit-learn>=1.4
+statsmodels>=0.14
+arch>=6.3
+ccxt>=4.2
+pyyaml>=6.0
+matplotlib>=3.8
+rich>=13.0
+tabulate>=0.9
+pyarrow>=15.0
+# Piloto de riesgo (python -m cryptoquant piloto)
+streamlit>=1.52
+requests>=2.31

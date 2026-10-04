@@ -1,0 +1,18 @@
+# Lo que necesita el piloto en el servidor, con las versiones probadas en el PC
+# (las del entorno del proyecto, Python 3.11). El resto del sistema no hace falta.
+streamlit==1.64.0
+altair==6.3.0
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==25.0.1
+scipy==1.17.1
+statsmodels==0.15.0
+# El boton que contrasta el mal dia con los 4 metodos de VaR: GARCH-t y la
+# covarianza de Ledoit-Wolf.
+arch==8.0.0
+scikit-learn==1.9.0
+# Velas diarias por la API de Binance. Sin ccxt, la app caeria a los archivos
+# mensuales de data.binance.vision, que van con semanas de retraso.
+ccxt==4.5.78
+PyYAML==6.0.3
+requests==2.34.2

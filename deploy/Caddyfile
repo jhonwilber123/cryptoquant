@@ -1,0 +1,14 @@
+# Caddy publica el piloto con HTTPS: pide y renueva solo el certificado
+# (Let's Encrypt) para PILOTO_DOMINIO, que debe apuntar a este servidor.
+# Con "localhost" usa un certificado propio, para probar en el PC.
+{$PILOTO_DOMINIO} {
+	encode zstd gzip
+	reverse_proxy app:8501
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+}

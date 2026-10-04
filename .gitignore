@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+.env
+*.log
+# Tu cartera del piloto (data/piloto/) y las descargas de precios: datos de
+# cada equipo, nunca al repositorio.
+data/
+# Informes que el programa genera al usarse.
+reports/
+# Despliegue: el entorno del servidor (dominio y derivada de la clave).
+deploy/*.env
